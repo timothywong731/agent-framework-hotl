@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
+from agent_framework import Agent, Executor, WorkflowContext, handler
+from agent_framework.ollama import OllamaChatClient
 from pypdf import PdfReader
 
-from .artifacts import REPOS
+from .artifacts import REPOS, ArtifactStore
+from .tools import SCRATCHPAD_PATH, make_tools
 
 
 # -- workflow messages (types encode mode: no mode flags anywhere) -------
@@ -246,3 +250,77 @@ them. Do not raise these questions again.
 
 Produce the revised phase report now.
 """
+
+
+# -- executor -----------------------------------------------------------------
+
+_NUDGE = """You produced your phase report but recorded no findings in shared
+memory. Call the update_memory tool now for each of the 3-8 key findings in
+the report below, then reply "done".
+
+{report}
+"""
+
+_MEMORY_GAP_NOTE = "\n\n> NOTE: agent recorded no memory entries for this phase."
+
+
+class PhaseExecutor(Executor):
+    """One workflow node per phase (and per repo for deep_analysis)."""
+
+    def __init__(self, spec: PhaseSpec, store: ArtifactStore,
+                 scratchpad_path=SCRATCHPAD_PATH, agent: Any | None = None) -> None:
+        super().__init__(id=spec.executor_id)
+        self._spec = spec
+        self._store = store
+        self._agent = agent or Agent(
+            client=OllamaChatClient(),  # model comes from OLLAMA_MODEL env var
+            name=spec.executor_id.replace(":", "_"),
+            instructions="You are one phase of a multi-agent assessment pipeline.",
+            tools=make_tools(store, spec.name, spec.unit, scratchpad_path),
+        )
+
+    @handler
+    async def on_start(self, go: str, ctx: WorkflowContext[PhaseDone | AnalysisDone]) -> None:
+        await self._run_initial(ctx)
+
+    @handler
+    async def on_upstream(self, done: PhaseDone,
+                          ctx: WorkflowContext[PhaseDone | AnalysisDone]) -> None:
+        await self._run_initial(ctx)
+
+    @handler
+    async def on_revision(self, trig: RevisionTrigger,
+                          ctx: WorkflowContext[RevisionDone]) -> None:
+        prompt = build_revision_prompt(
+            self._spec, self._spec.load_sources(), self._store.memory_text(),
+            trig.answers, self._store.read_report(self._spec.report_filename),
+        )
+        text = await self._invoke(prompt)
+        self._store.write_report(self._spec.report_filename, text)
+        print(f"  revised: {self._spec.executor_id}")
+        await ctx.send_message(RevisionDone(self._spec.name, self._spec.unit))
+
+    async def _run_initial(self, ctx) -> None:
+        before = self._store.memory_key_count(self._spec.name, self._spec.unit)
+        prompt = build_initial_prompt(
+            self._spec, self._spec.load_sources(), self._store.memory_text(),
+            self._store.open_questions(),
+        )
+        text = await self._invoke(prompt)
+        if self._store.memory_key_count(self._spec.name, self._spec.unit) == before:
+            # ponytail: one bounded nudge, then proceed and note the gap
+            await self._invoke(_NUDGE.format(report=text))
+            if self._store.memory_key_count(self._spec.name, self._spec.unit) == before:
+                text += _MEMORY_GAP_NOTE
+        self._store.write_report(self._spec.report_filename, text)
+        raised = [q for q in self._store.read_ledger()
+                  if q["phase"] == self._spec.name and q["unit"] == self._spec.unit]
+        print(f"  {self._spec.executor_id}: report written ({len(raised)} questions raised)")
+        if self._spec.unit is not None:
+            await ctx.send_message(AnalysisDone(self._spec.unit))
+        else:
+            await ctx.send_message(PhaseDone(self._spec.name))
+
+    async def _invoke(self, prompt: str) -> str:
+        result = await self._agent.run(prompt)
+        return result.text or "(no text returned by the model)"

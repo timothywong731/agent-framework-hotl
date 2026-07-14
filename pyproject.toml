@@ -18,6 +18,7 @@ packages = [{ include = "hotl_demo", from = "src" }]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "~=8.3"
+pytest-asyncio = "^1.4.0"
 
 [build-system]
 requires = ["poetry-core>=2.0"]
@@ -27,3 +28,4 @@ build-backend = "poetry.core.masonry.api"
 testpaths = ["tests"]
 markers = ["ollama: live end-to-end test requiring a running Ollama server"]
 addopts = "-m 'not ollama'"
+asyncio_mode = "auto"

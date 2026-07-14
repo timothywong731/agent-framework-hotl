@@ -1,7 +1,7 @@
 # Human-on-the-Loop Pipeline Demo — Design
 
 **Date:** 2026-07-14
-**Status:** Approved (rev 3 — phase purposes refined; parallel deep_analysis; questionnaire = template-filling)
+**Status:** Approved (rev 4 — prompts externalized as markdown+frontmatter+Jinja2; deep_analysis explores repos via tools)
 **Stack:** Python ≥3.10, Poetry, pytest, Microsoft Agent Framework (`agent-framework`, `agent-framework-ollama`), Ollama `gemma4:31b` (local; tools + thinking capable, 262k context — verified via `ollama show`)
 
 ## 1. Purpose
@@ -46,7 +46,7 @@ Phase instructions direct agents: *when evidence conflicts or a decision-critica
 | Order | Phase | Purpose | Sources pre-loaded into prompt |
 |---|---|---|---|
 | 1 | `discovery` | Initial scoping: learn the **true purpose** of the legacy system to be migrated — business function, users, criticality, actual vs documented scope | All 3 PDFs (extracted text) + file listings + READMEs of both repos |
-| 2 | `deep_analysis` | Repo-level deep dive, **parallelised per repo** (one agent per repo, concurrent): code-level blockers, tech debt, data layer, integrations, security smells. One markdown report **per repo** | PDF 1 + that repo's full contents |
+| 2 | `deep_analysis` | Repo-level deep dive, **parallelised per repo** (one agent per repo, concurrent): code-level blockers, tech debt, data layer, integrations, security smells. One markdown report **per repo** | PDF 1 pre-loaded; the repository is **explored live via tools** (`list_files`, `read_file`) — contents are NOT pre-loaded |
 | 3 | `enterprise_context` | Overlay corporate guidance: cloud strategy and patterns, cybersecurity practice, data-protection standards; flag strategy-vs-reality conflicts | PDFs 2 + 3 (+ memory already carries discovery/deep_analysis findings) |
 | 4 | `questionnaire` | **Fill in the migration-readiness question template** from accumulated memory; any slot that is unanswerable or conflicting → `raise_question` with a default. The filled template is the phase report | `sample_data/questionnaire_template.md` + full ledger + memory |
 | 5 | `review` | Human gate (not an agent) — see §8 | — |
@@ -74,7 +74,10 @@ agent-framework-hotl/
 │   └── make_pdfs.py            # regenerate PDFs from docs_src
 ├── src/hotl_demo/
 │   ├── artifacts.py            # Memory (json), Ledger (jsonl), report writing — pure IO, thread-safe
-│   ├── tools.py                # read_scratchpad, raise_question, update_memory
+│   ├── prompts/                # phase prompts: <phase>.md (YAML frontmatter + body) + Jinja2 wrappers
+│   │   ├── discovery.md / deep_analysis.md / enterprise_context.md / questionnaire.md
+│   │   └── _duties.md, initial.md, revision.md, final_report.md
+│   ├── tools.py                # read_scratchpad, raise_question, update_memory (+ repo tools for analyzers)
 │   ├── phases.py               # phase definitions + PhaseExecutor (+ per-repo analyzer instances, join)
 │   ├── review.py               # ReviewExecutor (the human gate)
 │   ├── report.py               # FinalReportExecutor
@@ -138,13 +141,19 @@ Each run writes `output/run_<timestamp>/`:
 
 ## 6. Agent tools
 
-Exactly three, all side-effect/steering ops (gemma4:31b tool calling verified):
+Three core tools on every phase agent, all side-effect/steering ops (gemma4:31b tool calling verified):
 
 1. `read_scratchpad()` → scratchpad text, or a note that it is empty. Every phase agent is instructed to consult it before working. **This is the user-mandated steering mechanism.**
 2. `raise_question(question, context, default_assumption)` → appends an `open` ledger entry tagged with the calling agent's phase (and unit, for repo analyzers); returns the assigned id.
 3. `update_memory(key, value)` → merges into the calling agent's own memory section (phase- and unit-bound by the executor; agents cannot write other sections). Values are flat strings.
 
-PDF text (pypdf), repo contents, the questionnaire template, and the current ledger are **pre-loaded into phase prompts by the executor** — deterministic, no flaky retrieval tool loops; 262k context makes this trivial.
+**deep_analysis analyzers additionally get repo-exploration tools** bound to their repository (rev 4): `list_files()` (file tree as relative paths) and `read_file(path)` (one file's contents; path-validated against traversal, size-capped). Analyzers explore agentically — the executor no longer pre-loads repo contents for them.
+
+PDF text (pypdf), the questionnaire template, and the current ledger remain **pre-loaded into phase prompts by the executor** — deterministic, no retrieval loops needed at 262k context.
+
+### Prompt templates (rev 4)
+
+Prompts live outside the code as **markdown files with YAML frontmatter, rendered through Jinja2** (`src/hotl_demo/prompts/`): one `<phase>.md` per phase whose frontmatter carries the phase metadata (`name`, `order`, `per_repo`, `report_filename` — the executor id rule stays in code) and whose body is the phase instructions (a Jinja2 template; analyzers receive `{{ unit }}`). Shared wrappers `initial.md` and `revision.md` render the full prompt from `{{ instructions }}`, `{{ sources }}`, `{{ memory }}`, `{{ open_questions }}` (+ `{{ answers }}`, `{{ previous_report }}` for revisions), including the common duties block `_duties.md`; `final_report.md` templates the report-phase prompt. `build_phase_specs` discovers phases by reading this directory — phases are editable (and re-orderable) without touching Python.
 
 ## 7. Workflow graph (Agent Framework)
 
@@ -218,7 +227,7 @@ Final report: output/run_20260714_1702/final_report.md
 
 ## 12. Testing (pytest; LLM-free by default)
 
-- **Unit (no LLM):** ledger append/update/query incl. unit attribution and id assignment under concurrency; memory merge incl. unit-nested deep_analysis section + review-once flag; scratchpad tool (missing/empty/content); affected-target computation `(phase, unit)`; decline semantics; revision-prompt assembly; join logic (waits for all analyzers, initial mode only); workflow graph shape (nodes/edges exist, one analyzer per repo).
+- **Unit (no LLM):** ledger append/update/query incl. unit attribution and id assignment under concurrency; memory merge incl. unit-nested deep_analysis section + review-once flag; scratchpad tool (missing/empty/content); repo-exploration tools (tree, read, traversal guard, missing-file error); prompt-file frontmatter parsing and Jinja2 rendering; affected-target computation `(phase, unit)`; decline semantics; revision-prompt assembly; join logic (waits for all analyzers, initial mode only); workflow graph shape (nodes/edges exist, one analyzer per repo).
 - **Live E2E (opt-in):** `@pytest.mark.ollama`, skipped unless `OLLAMA_E2E=1`; drives the full pipeline with scripted stdin answers.
 - No mock ChatClient: decision-bearing logic lives in pure functions; LLM wiring is covered by the opt-in live test.
 
@@ -235,5 +244,6 @@ Final report: output/run_20260714_1702/final_report.md
 | Sample repos | 2 (monolith + batch-recon) | 1 (no parallelism story); 3+ (slower demo on a local 31B model) |
 | Duplicate questions | Prompt-level suppression (open ledger in every prompt) | rev 2's structural dedupe via curation memory keys (dropped as machinery without a phase to own it) |
 | Structured side-effects | Tool calls | `response_format` structured output (unverified through `OllamaChatClient`) |
-| Source retrieval | Pre-loaded into prompts | Retrieval tools (flakier, no benefit at 262k context) |
+| Source retrieval | Pre-loaded into prompts, EXCEPT deep_analysis (rev 4: agentic repo exploration via `list_files`/`read_file` per user) | All-preloaded (rev 3); retrieval tools everywhere (flaky for docs) |
+| Prompt authoring (rev 4) | Markdown files with YAML frontmatter + Jinja2 rendering in `src/hotl_demo/prompts/` | Python string constants (rev 3 — harder to edit/showcase) |
 | Model | `gemma4:31b` (user's "gemma:31b", present locally) | — |

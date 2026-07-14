@@ -3,7 +3,9 @@ from pathlib import Path
 import pytest
 
 from hotl_demo.artifacts import REPOS, ArtifactStore
-from hotl_demo.tools import SCRATCHPAD_PATH, ensure_scratchpad, make_tools
+from hotl_demo.tools import SCRATCHPAD_PATH, ensure_scratchpad, make_repo_tools, make_tools
+
+MONOLITH = Path("sample_data/repos/oms-monolith")
 
 
 @pytest.fixture()
@@ -73,3 +75,16 @@ def test_update_memory_validates_args(store, tmp_path):
     assert update_memory(" ", "v").startswith("ERROR")
     assert update_memory("k", "").startswith("ERROR")
     assert store.memory_key_count("discovery", None) == 0
+
+
+def test_repo_tools_list_and_read():
+    list_files, read_file = make_repo_tools(MONOLITH)
+    tree = list_files()
+    assert "s3_uploader.py" in tree and "README.md" in tree
+    assert "boto3" in read_file("s3_uploader.py")
+
+
+def test_repo_tools_reject_traversal_and_missing():
+    _, read_file = make_repo_tools(MONOLITH)
+    assert read_file("../oms-batch-recon/config.py").startswith("ERROR")
+    assert read_file("nope.py").startswith("ERROR")

@@ -55,3 +55,31 @@ def make_tools(store: ArtifactStore, phase: str, unit: str | None = None,
         return f"Memory updated: {key.strip()}"
 
     return [read_scratchpad, raise_question, update_memory]
+
+
+def make_repo_tools(repo_dir: Path) -> list:
+    """Exploration tools for deep_analysis: the analyzer walks the repo itself."""
+    root = Path(repo_dir).resolve()
+
+    @tool(approval_mode="never_require")
+    def list_files() -> str:
+        """List every file in the repository you are analyzing, as relative
+        paths, one per line. Call this first to see the file tree."""
+        files = sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+        return "\n".join(files) or "(empty repository)"
+
+    @tool(approval_mode="never_require")
+    def read_file(path: str) -> str:
+        """Read one file from the repository by its relative path exactly as
+        shown by list_files. Returns the full file contents."""
+        target = (root / path).resolve()
+        if not target.is_relative_to(root):
+            return "ERROR: path escapes the repository. Use a relative path from list_files."
+        if not target.is_file():
+            return f"ERROR: no such file: {path}. Call list_files to see valid paths."
+        text = target.read_text(encoding="utf-8", errors="replace")
+        if len(text) > 20_000:
+            text = text[:20_000] + "\n... (truncated)"
+        return text
+
+    return [list_files, read_file]

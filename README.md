@@ -20,7 +20,7 @@ discovery -> fan-out                        +-> join -> enterprise_context -> qu
 ```
 
 - **discovery** - what does this system REALLY do (docs vs code)?
-- **deep_analysis** - one agent per repo, in parallel; per-repo reports
+- **deep_analysis** - one agent per repo, in parallel; explores its repo agentically via `list_files`/`read_file` tools; per-repo reports
 - **enterprise_context** - corporate cloud strategy + security standards overlay
 - **questionnaire** - fills the standard readiness question template
 - **review** - the human gate: answer (authoritative) or decline (default assumption applies)
@@ -74,6 +74,16 @@ Be terse; bullet points only.
 Every phase agent calls the `read_scratchpad` tool before working and follows
 what it finds. This is the basic steering channel into an otherwise closed
 pipeline.
+
+## Editing the prompts
+
+Phase prompts are not hardcoded: they live in `src/hotl_demo/prompts/` as
+markdown files with YAML frontmatter (phase metadata: `name`, `order`,
+`per_repo`, `report_filename`) and Jinja2 bodies (the phase instructions;
+analyzers receive `{{ unit }}`). Shared wrappers `initial.md` / `revision.md` /
+`final_report.md` assemble the full prompts from `{{ sources }}`,
+`{{ memory }}`, `{{ open_questions }}`, etc. Edit the markdown, rerun the
+demo - no Python changes needed.
 
 ## The sample data
 

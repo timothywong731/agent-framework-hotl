@@ -1,12 +1,13 @@
 from pathlib import Path
 
 from hotl_demo.phases import (
+    PROMPTS_DIR,
     PhaseSpec,
     build_initial_prompt,
     build_phase_specs,
     build_revision_prompt,
     load_pdf_text,
-    load_repo_text,
+    parse_prompt_file,
     repo_listing,
 )
 
@@ -27,12 +28,28 @@ def test_load_pdf_text_extracts_planted_content():
     assert "Microsoft Azure is the approved strategic" in text
 
 
-def test_repo_loaders():
+def test_repo_listing():
     listing = repo_listing(BASE / "repos" / "oms-monolith")
     assert "s3_uploader.py" in listing and "README.md" in listing
-    text = load_repo_text(BASE / "repos" / "oms-batch-recon")
-    assert "=== config.py ===" in text
-    assert 'ORACLE_PASSWORD = "Rec0n#2011!"' in text
+
+
+def test_parse_prompt_file_frontmatter_and_body():
+    meta, body = parse_prompt_file(PROMPTS_DIR / "deep_analysis.md")
+    assert meta["name"] == "deep_analysis"
+    assert meta["per_repo"] is True
+    assert meta["order"] == 2
+    assert meta["report_filename"] == "phase_02_deep_analysis_{unit}.md"
+    assert "{{ unit }}" in body                 # body is a Jinja2 template
+    assert "---" not in body.split("\n")[0]     # frontmatter stripped
+
+
+def test_analyzer_specs_render_unit_and_carry_repo_dir():
+    by_id = {s.executor_id: s for s in build_phase_specs(BASE)}
+    mono = by_id["analyze:oms-monolith"]
+    assert "oms-monolith" in mono.instructions          # {{ unit }} rendered
+    assert "list_files" in mono.instructions            # exploration directive
+    assert mono.repo_dir == BASE / "repos" / "oms-monolith"
+    assert by_id["discovery"].repo_dir is None
 
 
 def test_build_phase_specs_order_units_reports():
@@ -63,9 +80,9 @@ def test_spec_sources_contain_the_right_material():
     assert "financial reconciliation" in discovery                    # recon README
     assert "=== config.py ===" not in discovery                       # listings only, not full repo text
     monolith = norm(by_id["analyze:oms-monolith"].load_sources())
-    assert "boto3" in monolith                                        # full repo text
     assert "Supporting batch processes" in monolith                   # PDF 1 included
-    assert "Rec0n#2011!" not in monolith                              # other repo excluded
+    assert "boto3" not in monolith                                    # repo NOT pre-loaded (rev 4)
+    assert "list_files" in monolith                                   # pointer to exploration tools
     ec = norm(by_id["enterprise_context"].load_sources())
     assert "remain in-region" in ec                                   # security pdf
     assert "Supporting batch processes" not in ec                     # PDF 1 excluded

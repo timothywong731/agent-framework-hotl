@@ -1,0 +1,4 @@
+# OMS batch schedule (VMOMS01)
+*/1 * * * *  /usr/bin/python /opt/oms/order_processor.py
+0 2 * * *    /usr/bin/python /opt/oms/nightly_pricing_refresh.py
+30 2 * * *   /opt/oms/scripts/backup_to_tape.sh

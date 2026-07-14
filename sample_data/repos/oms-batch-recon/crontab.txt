@@ -1,0 +1,2 @@
+# reconciliation runs after the GL extract lands
+15 3 * * *  /usr/bin/python /opt/recon/recon_job.py

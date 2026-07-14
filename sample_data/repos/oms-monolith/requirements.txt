@@ -1,0 +1,4 @@
+cx_Oracle==5.3
+boto3==1.4.4
+suds==0.4
+pymqi==1.5.4

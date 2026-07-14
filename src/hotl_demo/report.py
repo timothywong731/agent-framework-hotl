@@ -11,6 +11,11 @@ from .artifacts import ArtifactStore
 from .phases import ReportTrigger
 
 
+def _cell(text: str) -> str:
+    # LLM-authored strings may contain newlines/pipes that would break the row.
+    return " ".join(str(text).split()).replace("|", "\\|")
+
+
 def render_adjudication_log(ledger: list[dict]) -> str:
     if not ledger:
         return "No questions were raised during this run.\n"
@@ -26,7 +31,7 @@ def render_adjudication_log(ledger: list[dict]) -> str:
             resolution = f"declined - default applied: {e['default_assumption']}"
         else:
             resolution = f"open - default assumption applied: {e['default_assumption']}"
-        lines.append(f"| {e['id']} | {where} | {e['question']} | {resolution} |")
+        lines.append(f"| {e['id']} | {where} | {_cell(e['question'])} | {_cell(resolution)} |")
     return "\n".join(lines) + "\n"
 
 

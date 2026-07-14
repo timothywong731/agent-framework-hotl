@@ -221,7 +221,8 @@ Produce your phase report now.
 
 
 def build_revision_prompt(spec: PhaseSpec, sources: str, memory_text: str,
-                          answers: list[dict], previous_report: str) -> str:
+                          open_questions: list[dict], answers: list[dict],
+                          previous_report: str) -> str:
     answer_lines = "\n".join(
         f"- {a['id']}: Q: {a['question']}\n  Human answer (AUTHORITATIVE): {a['human_answer']}\n"
         f"  (replaces default assumption: {a['default_assumption']})"
@@ -233,6 +234,9 @@ A human reviewer has adjudicated questions this phase raised. Human answers
 are authoritative and override any conflicting document or code evidence.
 Rewrite your phase report and refresh your update_memory findings to reflect
 them. Do not raise these questions again.
+
+## OPEN QUESTIONS already in the ledger (do not re-raise)
+{_format_open_questions(open_questions)}
 
 ## HUMAN ANSWERS
 {answer_lines}
@@ -293,7 +297,8 @@ class PhaseExecutor(Executor):
                           ctx: WorkflowContext[RevisionDone]) -> None:
         prompt = build_revision_prompt(
             self._spec, self._spec.load_sources(), self._store.memory_text(),
-            trig.answers, self._store.read_report(self._spec.report_filename),
+            self._store.open_questions(), trig.answers,
+            self._store.read_report(self._spec.report_filename),
         )
         text = await self._invoke(prompt)
         self._store.write_report(self._spec.report_filename, text)

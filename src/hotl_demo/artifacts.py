@@ -36,6 +36,12 @@ class ArtifactStore:
     # -- memory ---------------------------------------------------------
 
     def read_memory(self) -> dict:
+        # Locked: on Windows an unlocked open can collide with a concurrent
+        # locked os.replace (no FILE_SHARE_DELETE) and raise PermissionError.
+        with self._lock:
+            return self._read_memory_unlocked()
+
+    def _read_memory_unlocked(self) -> dict:
         return json.loads(self._memory_path.read_text(encoding="utf-8"))
 
     def memory_text(self) -> str:
@@ -43,7 +49,7 @@ class ArtifactStore:
 
     def update_memory(self, phase: str, unit: str | None, key: str, value: str) -> None:
         with self._lock:
-            mem = self.read_memory()
+            mem = self._read_memory_unlocked()
             target = mem["sections"][phase]
             if phase == "deep_analysis":
                 target = target[unit]  # KeyError for unknown repo is intentional
@@ -61,7 +67,7 @@ class ArtifactStore:
 
     def set_review_completed(self) -> None:
         with self._lock:
-            mem = self.read_memory()
+            mem = self._read_memory_unlocked()
             mem["review_completed"] = True
             self._write_memory(mem)
 

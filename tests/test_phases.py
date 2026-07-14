@@ -93,8 +93,17 @@ def test_initial_prompt_with_empty_ledger_says_so():
 def test_revision_prompt_assembly():
     answers = [{"id": "q-2", "question": "Which cloud?", "human_answer": "AWS, actually",
                 "default_assumption": "Azure"}]
-    prompt = build_revision_prompt(_spec(), "SOURCES-SENTINEL", "{}", answers, "OLD-REPORT")
+    open_qs = [{"id": "q-7", "phase": "enterprise_context", "unit": None,
+                "question": "Region?", "status": "open"}]
+    prompt = build_revision_prompt(_spec(), "SOURCES-SENTINEL", "{}", open_qs,
+                                   answers, "OLD-REPORT")
     assert "AWS, actually" in prompt
     assert "authoritative" in prompt.lower()
     assert "OLD-REPORT" in prompt
     assert "q-2" in prompt
+    assert "q-7" in prompt and "Region?" in prompt   # open ledger for dup suppression
+
+
+def test_revision_prompt_with_empty_ledger_says_so():
+    prompt = build_revision_prompt(_spec(), "S", "{}", [], [], "OLD")
+    assert "No questions raised so far" in prompt

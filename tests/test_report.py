@@ -31,6 +31,20 @@ def test_render_adjudication_log_empty():
     assert "No questions" in render_adjudication_log([])
 
 
+def test_render_adjudication_log_sanitizes_newlines_and_pipes():
+    entry = {"id": "q-1", "phase": "discovery", "unit": None,
+             "question": "Scope?\nRecon | batch too?", "context": "c",
+             "default_assumption": "in | scope", "status": "open",
+             "human_answer": None, "asked_at": "t"}
+    table = render_adjudication_log([entry])
+    rows = [ln for ln in table.strip().splitlines() if ln]
+    assert len(rows) == 3                              # header + separator + ONE row
+    assert all(ln.startswith("|") and ln.endswith("|") for ln in rows)
+    assert "Scope? Recon \\| batch too?" in rows[2]    # newline collapsed, pipe escaped
+    assert "in \\| scope" in rows[2]
+    assert rows[2].count(" | ") + 2 == rows[0].count("|")  # column count intact
+
+
 def test_build_report_prompt_includes_everything():
     prompt = build_report_prompt("{\"mem\": 1}", {"phase_01_discovery.md": "D-REPORT"}, LEDGER)
     assert "{\"mem\": 1}" in prompt

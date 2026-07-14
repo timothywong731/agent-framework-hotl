@@ -72,10 +72,11 @@ async def test_nudge_fires_once_when_no_memory_written(store, tmp_path):
 async def test_revision_run_rewrites_report_and_sends_revision_done(store, tmp_path):
     spec = _spec()
     store.write_report(spec.report_filename, "OLD")
+    open_id = store.raise_question("enterprise_context", None, "Still open?", "ctx", "EU")
     agent = FakeAgent(["NEW"])
     ctx = FakeCtx()
     trig = RevisionTrigger("discovery", None, answers=[{
-        "id": "q-1", "question": "Scope?", "human_answer": "recon in scope",
+        "id": "q-9", "question": "Scope?", "human_answer": "recon in scope",
         "default_assumption": "in scope",
     }])
     await _executor(store, tmp_path, spec, agent).on_revision(trig, ctx)
@@ -83,6 +84,8 @@ async def test_revision_run_rewrites_report_and_sends_revision_done(store, tmp_p
     assert ctx.sent == [RevisionDone("discovery", None)]
     assert "OLD" in agent.prompts[0]                 # previous report included
     assert "recon in scope" in agent.prompts[0]      # human answer included
+    assert open_id in agent.prompts[0]               # open ledger included (dup suppression)
+    assert "Still open?" in agent.prompts[0]
 
 
 @pytest.mark.asyncio

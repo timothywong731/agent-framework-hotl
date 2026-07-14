@@ -92,6 +92,33 @@ def test_concurrent_raises_get_unique_ids(store):
     assert len(store.read_ledger()) == 20
 
 
+def test_concurrent_memory_readers_and_writers(store):
+    """Windows: an unlocked open colliding with a locked os.replace raises
+    PermissionError; both paths must go through the store lock."""
+    errors: list[Exception] = []
+
+    def writer() -> None:
+        try:
+            for i in range(150):
+                store.update_memory("deep_analysis", "oms-monolith", f"k{i}", "v")
+        except Exception as exc:  # noqa: BLE001 - recorded for the assertion
+            errors.append(exc)
+
+    def reader() -> None:
+        try:
+            for _ in range(150):
+                store.memory_key_count("deep_analysis", "oms-monolith")
+                store.review_completed()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=f) for f in (writer, writer, reader, reader)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert errors == []
+    assert store.memory_key_count("deep_analysis", "oms-monolith") == 150
+
+
 def test_reports_roundtrip(store):
     assert store.read_report("phase_01_discovery.md") == ""
     p = store.write_report("phase_01_discovery.md", "# Discovery\nfindings")

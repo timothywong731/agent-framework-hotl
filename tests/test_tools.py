@@ -1,7 +1,9 @@
+from pathlib import Path
+
 import pytest
 
 from hotl_demo.artifacts import REPOS, ArtifactStore
-from hotl_demo.tools import ensure_scratchpad, make_tools
+from hotl_demo.tools import SCRATCHPAD_PATH, ensure_scratchpad, make_tools
 
 
 @pytest.fixture()
@@ -15,6 +17,12 @@ def _tools(store, tmp_path, phase="discovery", unit=None):
         store, phase, unit, scratchpad_path=pad
     )
     return pad, read_scratchpad, raise_question, update_memory
+
+
+def test_scratchpad_path_is_stable_repo_root():
+    # CWD-independent: running the demo from any directory must find the same file.
+    assert SCRATCHPAD_PATH.is_absolute()
+    assert SCRATCHPAD_PATH == Path(__file__).resolve().parents[1] / "scratchpad.md"
 
 
 def test_ensure_scratchpad_creates_but_never_truncates(tmp_path):

@@ -7,7 +7,9 @@ from agent_framework import tool
 
 from .artifacts import ArtifactStore
 
-SCRATCHPAD_PATH = Path("scratchpad.md")
+# Repo root (src/hotl_demo/tools.py -> two parents up): the spec mandates a
+# stable, CWD-independent steering-file path.
+SCRATCHPAD_PATH = Path(__file__).resolve().parents[2] / "scratchpad.md"
 
 
 def ensure_scratchpad(path: Path = SCRATCHPAD_PATH) -> None:

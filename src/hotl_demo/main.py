@@ -17,8 +17,18 @@ DEFAULT_MODEL = "gemma4:31b"
 
 
 def model_present(tags: dict, model: str) -> bool:
+    # Ollama resolves a bare name strictly to '<name>:latest' - mirror that,
+    # or preflight passes models the chat client will 404 on.
     names = {m.get("name", "") for m in tags.get("models", [])}
-    return model in names or any(n.split(":", 1)[0] == model for n in names)
+    wanted = model if ":" in model else f"{model}:latest"
+    return wanted in names
+
+
+def normalize_host(host: str) -> str:
+    # Ollama docs use scheme-less OLLAMA_HOST (e.g. 127.0.0.1:11434) and the
+    # ollama client accepts it; urllib needs an explicit scheme.
+    host = host.rstrip("/")
+    return host if "://" in host else f"http://{host}"
 
 
 def preflight(base_url: str, model: str) -> None:
@@ -39,7 +49,11 @@ def _prompt_human(q: LedgerQuestionRequest) -> str:
     print(f"\n[{q.question_id}] ({where}) {q.question}")
     print(f"      Evidence: {q.context}")
     print(f"      Default if declined: {q.default_assumption}")
-    return input("      Your answer (ENTER to decline): ")
+    try:
+        return input("      Your answer (ENTER to decline): ")
+    except EOFError:  # non-interactive stdin: decline, keep the run alive
+        print("(stdin closed - declining)")
+        return ""
 
 
 async def _amain() -> None:
@@ -50,7 +64,7 @@ async def _amain() -> None:
                         help="sample data directory")
     args = parser.parse_args()
     os.environ["OLLAMA_MODEL"] = args.model  # OllamaChatClient reads this
-    base_url = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    base_url = normalize_host(os.environ.get("OLLAMA_HOST", "http://localhost:11434"))
     preflight(base_url, args.model)
     ensure_scratchpad(SCRATCHPAD_PATH)
 

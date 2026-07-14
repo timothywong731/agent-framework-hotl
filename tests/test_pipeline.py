@@ -36,8 +36,94 @@ async def test_join_waits_for_all_analyzers():
     assert ctx.sent == [PhaseDone("deep_analysis")]
 
 
-def test_build_workflow_smoke(tmp_path, monkeypatch):
+def test_build_workflow_smoke_and_shape(tmp_path, monkeypatch):
     monkeypatch.setenv("OLLAMA_MODEL", "test-model")
     store = ArtifactStore(tmp_path / "run", repos=REPOS)
     workflow = build_workflow(store, Path("sample_data"), scratchpad_path=tmp_path / "pad.md")
-    assert workflow is not None
+    assert {ex.id for ex in workflow.get_executors_list()} == {
+        "discovery", "analyze:oms-monolith", "analyze:oms-batch-recon",
+        "join", "enterprise_context", "questionnaire", "review", "final_report",
+    }
+
+
+# -- LLM-free drive of the real assembled graph -----------------------------
+
+_TARGETS = {
+    "discovery": ("discovery", None),
+    "analyze_oms-monolith": ("deep_analysis", "oms-monolith"),
+    "analyze_oms-batch-recon": ("deep_analysis", "oms-batch-recon"),
+    "enterprise_context": ("enterprise_context", None),
+    "questionnaire": ("questionnaire", None),
+}
+
+
+class _DriveAgent:
+    """Stands in for every Agent in the graph: raises one question per phase on
+    the initial pass, one extra during discovery's revision, records call order."""
+
+    def __init__(self, name, store, calls):
+        self.name, self.store, self.calls = name, store, calls
+
+    async def run(self, prompt):
+        if self.name == "final_report":
+            self.calls.append((self.name, "report", prompt))
+            return type("R", (), {"text": "FINAL-VERDICT"})()
+        kind = "revision" if "## HUMAN ANSWERS" in prompt else "initial"
+        self.calls.append((self.name, kind, prompt))
+        phase, unit = _TARGETS[self.name]
+        if kind == "initial":
+            self.store.update_memory(phase, unit, f"finding_{len(self.calls)}", "v")
+            self.store.raise_question(phase, unit, f"Q from {self.name}?", "ctx", "default")
+        elif self.name == "discovery":
+            self.store.raise_question(phase, unit, "Raised during revision?", "ctx", "post-gate")
+        return type("R", (), {"text": f"REPORT[{self.name}][{kind}]"})()
+
+
+async def test_workflow_graph_drive_gate_revisions_report(tmp_path, monkeypatch):
+    from hotl_demo import phases, report
+    from hotl_demo.review import LedgerQuestionRequest
+
+    store = ArtifactStore(tmp_path / "run", repos=REPOS)
+    calls: list[tuple[str, str, str]] = []
+
+    def agent_factory(*_, name="", **__):
+        return _DriveAgent(name, store, calls)
+
+    for mod in (phases, report):
+        monkeypatch.setattr(mod, "Agent", agent_factory)
+        monkeypatch.setattr(mod, "OllamaChatClient", lambda: None)
+    workflow = build_workflow(store, Path("sample_data"), scratchpad_path=tmp_path / "pad.md")
+
+    # initial pass: fan-out/join runs all phases, gate pauses with one request per question
+    requests = {}
+    async for ev in workflow.run("start", stream=True):
+        if ev.type == "request_info" and isinstance(ev.data, LedgerQuestionRequest):
+            requests[ev.request_id] = ev.data
+    assert {(q.phase, q.unit) for q in requests.values()} == set(_TARGETS.values())
+    initial = [name for name, kind, _ in calls if kind == "initial"]
+    assert initial[0] == "discovery" and len(initial) == 5
+    assert initial.index("enterprise_context") > initial.index("analyze_oms-monolith")
+    assert initial.index("enterprise_context") > initial.index("analyze_oms-batch-recon")
+
+    # answer everything: all five targets revise sequentially in phase order, then report
+    outputs = []
+    stream = workflow.run(stream=True, responses={rid: f"answer to {q.question_id}"
+                                                  for rid, q in requests.items()})
+    async for ev in stream:
+        assert ev.type != "request_info"        # review-once: never prompts again
+        if ev.type == "output":
+            outputs.append(ev.data)
+    assert outputs == [str(store.run_dir / "final_report.md")]
+    assert [name for name, kind, _ in calls if kind == "revision"] == [
+        "discovery", "analyze_oms-monolith", "analyze_oms-batch-recon",
+        "enterprise_context", "questionnaire",
+    ]
+    # revision prompts carry the current open ledger (question raised mid-revision)
+    monolith_rev = next(p for n, k, p in calls if k == "revision" and n == "analyze_oms-monolith")
+    assert "Raised during revision?" in monolith_rev
+
+    ledger = store.read_ledger()
+    assert [e["status"] for e in ledger] == ["answered"] * 5 + ["open"]
+    final = store.read_report("final_report.md")
+    assert "FINAL-VERDICT" in final and "## Adjudication log" in final
+    assert "Raised during revision?" in final   # open question surfaces in the log

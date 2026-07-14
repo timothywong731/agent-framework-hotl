@@ -1,53 +1,60 @@
 # Human-on-the-Loop Pipeline Demo — Design
 
 **Date:** 2026-07-14
-**Status:** Approved (rev 2 — phases renamed/restructured)
+**Status:** Approved (rev 3 — phase purposes refined; parallel deep_analysis; questionnaire = template-filling)
 **Stack:** Python ≥3.10, Poetry, pytest, Microsoft Agent Framework (`agent-framework`, `agent-framework-ollama`), Ollama `gemma4:31b` (local; tools + thinking capable, 262k context — verified via `ollama show`)
 
 ## 1. Purpose
 
-Demo project showcasing **human-on-the-loop (HOTL)** capability on Microsoft Agent Framework: a sequential multi-phase agent pipeline that runs autonomously but (a) accumulates a ledger of questions needing human adjudication, (b) pauses exactly once at a review gate where a human answers or declines each question, (c) selectively re-runs affected phases with human answers treated as authoritative, and (d) accepts freeform human steering via a scratchpad file read by agents through a tool call.
+Demo project showcasing **human-on-the-loop (HOTL)** capability on Microsoft Agent Framework: a multi-phase agent pipeline that runs autonomously but (a) accumulates a ledger of questions needing human adjudication, (b) pauses exactly once at a review gate where a human answers or declines each question, (c) selectively re-runs affected phases with human answers treated as authoritative, and (d) accepts freeform human steering via a scratchpad file read by agents through a tool call.
 
 ## 2. Scenario
 
-Fictional retailer **Meridian Retail** commissions a **cloud migration readiness assessment** of its legacy **Order Management System (OMS)**. Source data (all synthetic, committed to the repo):
+Fictional retailer **Meridian Retail** commissions a **cloud migration readiness assessment** of its legacy **Order Management System (OMS)** estate. Source data (all synthetic, committed to the repo):
 
-- 3 enterprise-architecture PDFs (generated from committed markdown sources via `scripts/make_pdfs.py`, fpdf2)
-- a ~10-file fake legacy code repo
+- 3 enterprise PDFs (generated from committed markdown sources via `scripts/make_pdfs.py`, fpdf2)
+- 2 fake legacy code repos
+- 1 migration-readiness questionnaire template
+
+### Source documents
+
+- **PDF 1 — OMS Application Architecture & Business Context:** order flow, Python 2.7 monolith, cron batch jobs, NFS file shares, Oracle 11g PL/SQL; vaguely mentions "supporting batch processes" (understating the reconciliation function — planted); **no RTO/RPO anywhere** (planted).
+- **PDF 2 — Enterprise Cloud Strategy & Patterns:** Azure declared strategic cloud, landing-zone model, PaaS-first patterns, integration guidance; IBM MQ "to be retired, date TBC" (planted).
+- **PDF 3 — Cybersecurity & Data Protection Standards:** customer data must "remain in-region" with region unspecified (planted); secrets-management policy (no credentials in code); encryption and data-classification requirements.
+
+### Legacy repos (`sample_data/repos/`)
+
+- **`oms-monolith`:** `order_processor.py` (Python-2 idioms), `s3_uploader.py` (**boto3** — conflicts with Azure mandate), `db.py` (cx_Oracle + PL/SQL calls), hardcoded `/mnt/nfs/orders` paths, `crontab.txt`, ancient pinned `requirements.txt`.
+- **`oms-batch-recon`:** nightly financial-reconciliation scripts (duties absent from the docs — planted scope gap), SFTP feed to VendorCo, **hardcoded database credentials** (violates PDF 3 — planted), reads the same Oracle schema.
 
 ### Planted gaps and conflicts (ledger fuel)
 
 | # | Planting | Where | Expected ledger question | Likely raised by | Default assumption |
 |---|---|---|---|---|---|
-| 1 | EA doc mandates Azure; code imports `boto3`/S3 | PDF 1 vs `s3_uploader.py` | Which target cloud is authoritative? | enterprise_context | Azure, per EA doc |
-| 2 | No RTO/RPO stated anywhere | PDF 2 | What are the RTO/RPO requirements? | deep_analysis | RTO 4h / RPO 1h (conservative) |
-| 3 | Customer data must "remain in-region", region unspecified | PDF 1 | Which region/jurisdiction applies? | enterprise_context | EU |
-| 4 | MQ retirement "planned", no date | PDF 3 | Replace MQ during migration or keep? | enterprise_context | Plan replacement now |
-| 5 | Oracle 11g + PL/SQL; license portability unknown | PDF 1/2 vs `db.py` | Is the Oracle license BYOL-eligible in cloud? | deep_analysis | No; plan managed-PostgreSQL path |
+| 1 | Recon duties absent from docs | PDF 1 vs `oms-batch-recon` | Is reconciliation functionality in migration scope? | discovery | In scope |
+| 2 | Azure mandate vs `boto3`/S3 in code | PDF 2 vs `oms-monolith` | Which target cloud is authoritative? | enterprise_context | Azure, per strategy |
+| 3 | No RTO/RPO stated anywhere | PDF 1 | What are the RTO/RPO requirements? | deep_analysis (monolith) | RTO 4h / RPO 1h |
+| 4 | "Remain in-region", region unspecified | PDF 3 | Which region/jurisdiction applies? | enterprise_context | EU |
+| 5 | MQ retirement "date TBC" | PDF 2 | Replace MQ during migration or keep? | enterprise_context | Plan replacement now |
+| 6 | Oracle 11g licensing portability unknown | PDF 1 vs `db.py` | Is the Oracle license BYOL-eligible in cloud? | deep_analysis (monolith) | No; plan managed-PostgreSQL path |
+| 7 | Hardcoded DB credentials | `oms-batch-recon` vs PDF 3 | Remediate secrets before or during migration? | deep_analysis (batch-recon) | Vault + rotate before migration |
 
-Phase instructions direct agents: *when evidence conflicts or a decision-critical fact is missing, call `raise_question` with a stated default assumption, then proceed using the default.* Phases may raise questions beyond the plantings; attribution above is indicative, not enforced.
-
-### Mock data contents
-
-- **PDF 1 — Enterprise Architecture Overview:** on-prem VMware estate, Oracle 11g, IBM MQ, DR site; Azure declared strategic cloud; vague data-residency clause.
-- **PDF 2 — OMS Application Architecture:** Python 2.7 monolith, cron batch jobs, NFS file shares, PL/SQL stored procedures; no RTO/RPO.
-- **PDF 3 — Integration Landscape:** SOAP services, nightly SFTP feed to VendorCo, IBM MQ with unspecified retirement date.
-- **Legacy repo (`sample_data/legacy_repo/`):** `order_processor.py` (Python-2 idioms), `s3_uploader.py` (boto3), `db.py` (cx_Oracle + PL/SQL calls), hardcoded `/mnt/nfs/orders` paths, `crontab.txt`, ancient pinned `requirements.txt`, plus a few filler modules.
+Phase instructions direct agents: *when evidence conflicts or a decision-critical fact is missing, call `raise_question` with a stated default assumption, then proceed using the default. Check the ledger context you were given first — do not re-raise a question that is already open.* Attribution above is indicative, not enforced.
 
 ## 3. Phases
 
-Four phase agents, then the human gate, then reporting:
-
-| Order | Phase | Responsibility | Sources pre-loaded into prompt |
+| Order | Phase | Purpose | Sources pre-loaded into prompt |
 |---|---|---|---|
-| 1 | `discovery` | Shallow inventory of everything: systems, documents, repo contents, assessment scope | All 3 PDFs (extracted text) + repo file listing |
-| 2 | `deep_analysis` | Deep dive on the OMS: code-level blockers, tech debt, data layer, batch/file coupling | PDF 2 + full legacy repo contents |
-| 3 | `enterprise_context` | Overlay EA strategy: cloud mandate, data residency, integration landscape, conflicts between strategy and code reality | PDFs 1 + 3 (+ memory already carries deep_analysis findings) |
-| 4 | `questionnaire` | Curate the accumulated ledger for human attention: dedupe/merge, prioritize, sharpen default assumptions | Full ledger + memory (no PDFs/repo) |
+| 1 | `discovery` | Initial scoping: learn the **true purpose** of the legacy system to be migrated — business function, users, criticality, actual vs documented scope | All 3 PDFs (extracted text) + file listings + READMEs of both repos |
+| 2 | `deep_analysis` | Repo-level deep dive, **parallelised per repo** (one agent per repo, concurrent): code-level blockers, tech debt, data layer, integrations, security smells. One markdown report **per repo** | PDF 1 + that repo's full contents |
+| 3 | `enterprise_context` | Overlay corporate guidance: cloud strategy and patterns, cybersecurity practice, data-protection standards; flag strategy-vs-reality conflicts | PDFs 2 + 3 (+ memory already carries discovery/deep_analysis findings) |
+| 4 | `questionnaire` | **Fill in the migration-readiness question template** from accumulated memory; any slot that is unanswerable or conflicting → `raise_question` with a default. The filled template is the phase report | `sample_data/questionnaire_template.md` + full ledger + memory |
 | 5 | `review` | Human gate (not an agent) — see §8 | — |
 | 6 | `final_report` | Readiness scorecard + migration recommendation + adjudication log, synthesized from post-adjudication memory | memory + phase reports + ledger |
 
-The `questionnaire` phase exists to protect human attention — fewer, sharper questions at the gate. It records curation in its memory section using flat string conventions (no nested JSON, friendly to local-model tool calls): `order = "q-1,q-3,q-2"`, `duplicate:q-4 = "q-1"`.
+### Questionnaire template (`sample_data/questionnaire_template.md`)
+
+~10 standard migration-readiness slots: business purpose & criticality, migration scope, target platform, migration approach (6R), data store & licensing, RTO/RPO, data residency & classification, integrations & messaging, security posture gaps, timeline constraints. Committed as markdown with blank slots; the questionnaire agent fills each slot citing evidence (and question ids where a default was applied).
 
 ## 4. Repository layout
 
@@ -58,17 +65,20 @@ agent-framework-hotl/
 ├── scratchpad.md               # steering file — stable path, created empty if missing, never truncated
 ├── sample_data/
 │   ├── docs_src/*.md           # markdown sources of the PDFs
-│   ├── docs/*.pdf              # generated PDFs (committed for zero-setup)
-│   └── legacy_repo/            # fake OMS codebase
+│   ├── docs/*.pdf              # 3 generated PDFs (committed for zero-setup)
+│   ├── questionnaire_template.md
+│   └── repos/
+│       ├── oms-monolith/
+│       └── oms-batch-recon/
 ├── scripts/
 │   └── make_pdfs.py            # regenerate PDFs from docs_src
 ├── src/hotl_demo/
-│   ├── artifacts.py            # Memory (json), Ledger (jsonl), report writing — pure IO
+│   ├── artifacts.py            # Memory (json), Ledger (jsonl), report writing — pure IO, thread-safe
 │   ├── tools.py                # read_scratchpad, raise_question, update_memory
-│   ├── phases.py               # phase definitions (discovery, deep_analysis, enterprise_context, questionnaire) + PhaseExecutor
+│   ├── phases.py               # phase definitions + PhaseExecutor (+ per-repo analyzer instances, join)
 │   ├── review.py               # ReviewExecutor (the human gate)
 │   ├── report.py               # FinalReportExecutor
-│   ├── pipeline.py             # build_workflow() graph assembly
+│   ├── pipeline.py             # build_workflow() graph assembly (fan-out/fan-in for deep_analysis)
 │   └── main.py                 # CLI runner (argparse), event loop, review prompts, preflight
 └── tests/
 ```
@@ -81,12 +91,32 @@ Each run writes `output/run_<timestamp>/`:
 
 | Artifact | Form | Writer |
 |---|---|---|
-| `phase_0N_<name>.md` | markdown phase report | phase agent's final text; overwritten on revision |
-| `memory.json` | `{run_id, review_completed, sections: {discovery, deep_analysis, enterprise_context, questionnaire}}` | agents via `update_memory` tool |
+| `phase_01_discovery.md`, `phase_02_deep_analysis_<repo>.md` (one per repo), `phase_03_enterprise_context.md`, `phase_04_questionnaire.md` | markdown phase reports; overwritten on revision | phase agents' final text |
+| `memory.json` | see shape below | agents via `update_memory` tool |
 | `ledger.jsonl` | append-only; one JSON object per question | agents via `raise_question` tool |
 | `final_report.md` | executive summary, readiness scorecard, recommendation, adjudication log | report executor |
 
 `scratchpad.md` lives at the repo root (stable, human-editable before/mid-run), not in the run dir.
+
+### memory.json shape
+
+```json
+{
+  "run_id": "…",
+  "review_completed": false,
+  "sections": {
+    "discovery": {"<key>": "<value>"},
+    "deep_analysis": {
+      "oms-monolith": {"<key>": "<value>"},
+      "oms-batch-recon": {"<key>": "<value>"}
+    },
+    "enterprise_context": {"<key>": "<value>"},
+    "questionnaire": {"<slot>": "<filled value>"}
+  }
+}
+```
+
+`deep_analysis` is the only unit-nested section; each analyzer's tools are bound to its repo, so concurrent writers never collide on keys. Writes are serialized with a lock (see §11).
 
 ### Ledger entry schema
 
@@ -94,6 +124,7 @@ Each run writes `output/run_<timestamp>/`:
 {
   "id": "q-<seq>",
   "phase": "deep_analysis",
+  "unit": "oms-batch-recon",
   "question": "…",
   "context": "…evidence…",
   "default_assumption": "…",
@@ -103,42 +134,46 @@ Each run writes `output/run_<timestamp>/`:
 }
 ```
 
-Appends set `status: open`. The review gate rewrites entries to `answered` (with `human_answer`) or `declined`. Ledger raises are append-only; the questionnaire phase curates via its memory section, never by editing ledger lines.
+`unit` is the repo name for deep_analysis questions, else `null`. Appends set `status: open`; the review gate rewrites entries to `answered` (with `human_answer`) or `declined`.
 
 ## 6. Agent tools
 
 Exactly three, all side-effect/steering ops (gemma4:31b tool calling verified):
 
 1. `read_scratchpad()` → scratchpad text, or a note that it is empty. Every phase agent is instructed to consult it before working. **This is the user-mandated steering mechanism.**
-2. `raise_question(question, context, default_assumption)` → appends an `open` ledger entry tagged with the current phase; returns the assigned id.
-3. `update_memory(section, key, value)` → merges into the phase's section of `memory.json`. Section validated against the phase's allowed section. Values are flat strings.
+2. `raise_question(question, context, default_assumption)` → appends an `open` ledger entry tagged with the calling agent's phase (and unit, for repo analyzers); returns the assigned id.
+3. `update_memory(key, value)` → merges into the calling agent's own memory section (phase- and unit-bound by the executor; agents cannot write other sections). Values are flat strings.
 
-PDF text (pypdf) and legacy-repo files are **pre-loaded into phase prompts by the executor** — deterministic, no flaky retrieval tool loops; 262k context makes this trivial.
+PDF text (pypdf), repo contents, the questionnaire template, and the current ledger are **pre-loaded into phase prompts by the executor** — deterministic, no flaky retrieval tool loops; 262k context makes this trivial.
 
 ## 7. Workflow graph (Agent Framework)
 
-Built with `WorkflowBuilder`; human pause uses native `ctx.request_info()` / `@response_handler` (same pattern as the official `guessing_game_with_human_input.py` sample).
+Built with `WorkflowBuilder`. deep_analysis is a **graph-level fan-out/fan-in** (per the official `fan_out_fan_in_edges.py` sample) — one analyzer node per repo runs concurrently. The human pause uses native `ctx.request_info()` / `@response_handler` (per the official `guessing_game_with_human_input.py` sample).
 
 ```
-discovery → deep_analysis → enterprise_context → questionnaire → review → final_report
-    ▲ ▲ ▲ ▲                                                        │
-    └─┴─┴─┴──────── RevisionTrigger (per affected phase) ──────────┘
-   (revised phase sends revision-mode completion back to review)
+                    ┌─ analyze[oms-monolith] ──┐
+discovery ── fan-out┤                          ├ join ── enterprise_context ── questionnaire ── review ── final_report
+                    └─ analyze[oms-batch-recon]┘                                                  │
+    ▲                        ▲  ▲                        ▲                    ▲                   │
+    └────────────────────────┴──┴────────────────────────┴────────────────────┴── RevisionTrigger┘
+   (revised phase/analyzer sends revision-mode completion straight back to review)
 ```
 
-- **Messages:** `PhaseTrigger {mode: initial|revision, answers: [...]}` / `PhaseDone {phase, mode}` / `ReportTrigger`. Edge conditions route on message type + mode: initial completions flow forward; revision completions return to the review gate. `questionnaire`'s single edge to `review` carries both its initial and revision completions; `PhaseDone.mode` disambiguates.
-- **PhaseExecutor** (one class, four instances): builds prompt (phase instructions + pre-loaded sources per §3 + current `memory.json` + scratchpad reminder), runs its `Agent` (`OllamaChatClient`), writes the phase report from the agent's final text, messages the next node. In revision mode the prompt additionally carries the human answers (marked authoritative) and the phase's previous report; the agent rewrites report + memory entries.
+- **Messages:** `PhaseTrigger {mode: initial|revision, answers: [...]}` / `PhaseDone {phase, unit, mode}` / `ReportTrigger`. Edge conditions route on message type + mode: initial completions flow forward (analyzers → join, which waits for all repos before triggering enterprise_context); revision completions return directly to `review`, bypassing the join. `questionnaire`'s single edge to `review` carries both modes; `PhaseDone.mode` disambiguates.
+- **PhaseExecutor** (one class; instances: discovery, one analyzer per repo, enterprise_context, questionnaire): builds prompt (phase instructions + pre-loaded sources per §3 + current `memory.json` + open-ledger summary + scratchpad reminder), runs its `Agent` (`OllamaChatClient`), writes the phase report from the agent's final text, messages the next node. In revision mode the prompt additionally carries the human answers (marked authoritative) and the phase's previous report; the agent rewrites report + memory entries.
+- **Join** is a trivial custom executor: collect `PhaseDone` from every analyzer (initial mode only), then trigger enterprise_context.
 - **File-backed shared state:** `memory.json`/`ledger.jsonl` are injected into executors as an artifact-store object bound to the run dir. The files themselves are the demo's long-term-memory story; workflow-internal state is not duplicated.
 
 ## 8. Review gate (HOTL centerpiece)
 
-1. On arrival from `questionnaire`, load all `open` ledger questions. None → `ReportTrigger` directly.
-2. Apply the questionnaire curation from memory: order questions per `order`; skip questions flagged `duplicate:<id>` (they inherit the canonical question's resolution). Fall back to ledger order if curation is absent/unparseable.
-3. Emit one `ctx.request_info(LedgerQuestionRequest, response_type=str)` per non-duplicate question; the workflow run goes idle (framework-native pause).
-4. CLI runner catches `request_info` events and prompts per question: question + context + default assumption. Typed text = answer (**treated as authoritative**); plain ENTER (or whitespace) = decline.
-5. Runner resumes via `workflow.run(responses={request_id: answer})`. The `@response_handler` marks each ledger entry `answered`/`declined`; duplicates get the canonical's status and answer, annotated `via q-<id>`.
-6. When all responses are in: affected phases = phases of all entries whose final status is `answered` (directly or via canonical). Declined → no re-run; the default assumption stands.
-7. Affected phases re-run **sequentially in phase order** (gate dispatches the next `RevisionTrigger` only after the previous revision returns), then `ReportTrigger`.
+1. On arrival from `questionnaire`, load all `open` ledger questions in ledger order. None → `ReportTrigger` directly.
+2. Emit one `ctx.request_info(LedgerQuestionRequest, response_type=str)` per question; the workflow run goes idle (framework-native pause).
+3. CLI runner catches `request_info` events and prompts per question: question + context + default assumption. Typed text = answer (**treated as authoritative**); plain ENTER (or whitespace) = decline.
+4. Runner resumes via `workflow.run(responses={request_id: answer})`. The `@response_handler` marks each ledger entry `answered`/`declined`.
+5. When all responses are in: affected targets = the `(phase, unit)` pairs of entries whose status is `answered`. Declined → no re-run; the default assumption stands.
+6. Affected targets re-run **sequentially in phase order** (for deep_analysis, only the affected repo's analyzer; gate dispatches the next `RevisionTrigger` only after the previous revision returns), then `ReportTrigger`.
+
+Duplicate suppression is prompt-level, not structural: every phase receives the current open ledger in its prompt and is instructed not to re-raise existing questions. No curation machinery.
 
 ### Review-once rule
 
@@ -150,24 +185,26 @@ Re-runs do not cascade downstream: an answered discovery question re-runs `disco
 
 ## 9. Final report
 
-The report executor composes `final_report.md` from `memory.json` + phase reports (one LLM call): executive summary, **readiness scorecard, and migration recommendation** — the verdict lives here, synthesized fresh from post-adjudication memory. It then **deterministically appends the adjudication log** — a table of answered (with human answer), declined, and still-open questions straight from the ledger — so the human-adjudication record is always accurate regardless of LLM behavior. Outputs the report path via `ctx.yield_output`.
+The report executor composes `final_report.md` from `memory.json` + phase reports (one LLM call): executive summary, **readiness scorecard, and migration recommendation** — the verdict lives here, synthesized fresh from post-adjudication memory (including the filled questionnaire). It then **deterministically appends the adjudication log** — a table of answered (with human answer), declined, and still-open questions straight from the ledger — so the human-adjudication record is always accurate regardless of LLM behavior. Outputs the report path via `ctx.yield_output`.
 
 ## 10. CLI UX
 
 ```
 $ poetry run demo
 Preflight: Ollama OK, gemma4:31b present.
-Phase 1/4 discovery            … report written (0 questions raised)
-Phase 2/4 deep_analysis        … report written (2 questions raised)
-Phase 3/4 enterprise_context   … report written (3 questions raised)
-Phase 4/4 questionnaire        … curated ledger: 5 open, 1 flagged duplicate → 4 to ask
-== REVIEW — 4 questions ==
-[q-1] (enterprise_context) Which target cloud is authoritative?
-      Evidence: EA overview mandates Azure; s3_uploader.py uses AWS boto3.
-      Default if declined: Azure per EA doc.
+Phase 1/4 discovery              … report written (1 question raised)
+Phase 2/4 deep_analysis          … analyzing 2 repos in parallel
+  ├ oms-monolith                 … report written (2 questions raised)
+  └ oms-batch-recon              … report written (1 question raised)
+Phase 3/4 enterprise_context     … report written (3 questions raised)
+Phase 4/4 questionnaire          … template filled: 10 slots, 7 from evidence, 3 on defaults
+== REVIEW — 7 open questions ==
+[q-1] (discovery) Is reconciliation functionality in migration scope?
+      Evidence: oms-batch-recon performs financial reconciliation; absent from PDF 1.
+      Default if declined: in scope.
       Your answer (ENTER to decline): _
 …
-Re-running affected phases: deep_analysis, enterprise_context
+Re-running affected: discovery, deep_analysis[oms-batch-recon], enterprise_context
 Final report: output/run_20260714_1702/final_report.md
 ```
 
@@ -176,13 +213,12 @@ Final report: output/run_20260714_1702/final_report.md
 - **Preflight:** HTTP GET `localhost:11434/api/tags`; verify server up and `gemma4:31b` present; fail fast with an actionable message.
 - **Missing `update_memory` calls:** one bounded nudge turn; if still absent, proceed and note the gap in the phase report (no crash).
 - **Tool arg validation:** tools return corrective error strings; the framework feeds them back to the model.
-- **Atomic writes** for `memory.json`/`ledger.jsonl` (temp file + `os.replace`) — humans may have the files open mid-run.
+- **Concurrent analyzers:** artifact store guards `memory.json`/`ledger.jsonl` with a `threading.Lock`; ledger ids assigned under the lock; atomic writes (temp file + `os.replace`) — humans may have the files open mid-run.
 - **Review input:** empty/whitespace = decline. Ctrl-C aborts cleanly; artifacts persist.
-- **Curation parsing:** malformed `order`/`duplicate:*` values are ignored (fall back to ledger order, no dedupe) rather than fatal.
 
 ## 12. Testing (pytest; LLM-free by default)
 
-- **Unit (no LLM):** ledger append/update/query; memory merge + review-once flag; scratchpad tool (missing/empty/content); questionnaire curation parsing (order string, `duplicate:*` keys, malformed values); gate dedupe-skip and inherit-resolution logic; affected-phase computation (incl. via-canonical answers); decline semantics; revision-prompt assembly; workflow graph shape (nodes/edges exist).
+- **Unit (no LLM):** ledger append/update/query incl. unit attribution and id assignment under concurrency; memory merge incl. unit-nested deep_analysis section + review-once flag; scratchpad tool (missing/empty/content); affected-target computation `(phase, unit)`; decline semantics; revision-prompt assembly; join logic (waits for all analyzers, initial mode only); workflow graph shape (nodes/edges exist, one analyzer per repo).
 - **Live E2E (opt-in):** `@pytest.mark.ollama`, skipped unless `OLLAMA_E2E=1`; drives the full pipeline with scripted stdin answers.
 - No mock ChatClient: decision-bearing logic lives in pure functions; LLM wiring is covered by the opt-in live test.
 
@@ -194,7 +230,10 @@ Final report: output/run_20260714_1702/final_report.md
 | Review UX | Interactive CLI, one process | Checkpoint pause/exit/resume; both via flag |
 | Closed-pipeline contrast mode | Not built (HOTL only) | `--closed` flag |
 | Orchestration | `WorkflowBuilder` graph + custom executors | `SequentialBuilder.with_request_info` (wrong interaction shape); plain asyncio (doesn't showcase framework) |
-| Phase structure (rev 2) | discovery → deep_analysis → enterprise_context → questionnaire, verdict in final_report; questionnaire curates ledger (dedupe/prioritize) | Pure rename keeping old semantics |
+| Phase purposes (rev 3) | discovery = true-purpose scoping; deep_analysis = per-repo parallel deep dive; enterprise_context = corporate guidance overlay; questionnaire = fill question template | rev 2's ledger-curation questionnaire (dropped — user clarified intent) |
+| deep_analysis parallelism | Graph-level fan-out/fan-in, one analyzer node per repo | asyncio.gather inside one executor (simpler, but hides the framework's parallelism feature) |
+| Sample repos | 2 (monolith + batch-recon) | 1 (no parallelism story); 3+ (slower demo on a local 31B model) |
+| Duplicate questions | Prompt-level suppression (open ledger in every prompt) | rev 2's structural dedupe via curation memory keys (dropped as machinery without a phase to own it) |
 | Structured side-effects | Tool calls | `response_format` structured output (unverified through `OllamaChatClient`) |
 | Source retrieval | Pre-loaded into prompts | Retrieval tools (flakier, no benefit at 262k context) |
 | Model | `gemma4:31b` (user's "gemma:31b", present locally) | — |

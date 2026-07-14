@@ -89,9 +89,37 @@ async def test_revision_run_rewrites_report_and_sends_revision_done(store, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_empty_agent_text_falls_back(store, tmp_path):
+async def test_empty_text_retries_report_once_then_falls_back(store, tmp_path):
     spec = _spec()
-    agent = FakeAgent([""], side_effect=lambda p: store.update_memory("discovery", None, "k", "v"))
+    agent = FakeAgent(["", ""], side_effect=lambda p: store.update_memory("discovery", None, "k", "v"))
     ctx = FakeCtx()
     await _executor(store, tmp_path, spec, agent).on_start("start", ctx)
-    assert "no text" in store.read_report(spec.report_filename)
+    assert len(agent.prompts) == 2                          # initial + one report retry
+    assert "did not produce the phase report" in agent.prompts[1]
+    assert "no report produced" in store.read_report(spec.report_filename)
+    assert ctx.sent == [PhaseDone("discovery")]             # pipeline continues
+
+
+@pytest.mark.asyncio
+async def test_leaked_special_tokens_are_stripped_and_report_retried(store, tmp_path):
+    # regression: gemma4 leaked "<|tool_response>" as the entire final text
+    spec = _spec()
+    agent = FakeAgent(
+        ["<|tool_response>", "# Real Report"],
+        side_effect=lambda p: store.update_memory("discovery", None, "k", "v"),
+    )
+    ctx = FakeCtx()
+    await _executor(store, tmp_path, spec, agent).on_start("start", ctx)
+    assert store.read_report(spec.report_filename) == "# Real Report"
+    assert len(agent.prompts) == 2
+
+
+@pytest.mark.asyncio
+async def test_nudge_is_brace_safe(store, tmp_path):
+    # regression: _NUDGE.format(report=...) crashed on reports containing braces
+    spec = _spec()
+    agent = FakeAgent(['# Report with {braces} and {"json": true}', "nudge reply"])
+    ctx = FakeCtx()
+    await _executor(store, tmp_path, spec, agent).on_start("start", ctx)
+    assert "{braces}" in agent.prompts[1]                   # embedded verbatim, no crash
+    assert store.read_report(spec.report_filename).startswith("# Report with {braces}")

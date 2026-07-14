@@ -7,6 +7,7 @@ revision.md, final_report.md) assemble the full prompts.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -204,14 +205,28 @@ def build_revision_prompt(spec: PhaseSpec, sources: str, memory_text: str,
 
 # -- executor -----------------------------------------------------------------
 
-_NUDGE = """You produced your phase report but recorded no findings in shared
+# NOT str.format-ed: reports routinely contain literal braces (code, JSON).
+_NUDGE_PREFIX = """You produced your phase report but recorded no findings in shared
 memory. Call the update_memory tool now for each of the 3-8 key findings in
 the report below, then reply "done".
 
-{report}
 """
 
+_REPORT_RETRY = (
+    "You explored the sources but did not produce the phase report. Write your "
+    "complete phase report now as your final answer: well-structured markdown, "
+    "headings, concise, evidence-cited."
+)
+
 _MEMORY_GAP_NOTE = "\n\n> NOTE: agent recorded no memory entries for this phase."
+
+# Local models occasionally leak chat-template specials (e.g. "<|tool_response>")
+# as final text after a tool-heavy run; strip them and treat the rest as the text.
+_SPECIAL_TOKEN_RE = re.compile(r"<\|[^|>]{1,32}\|?>")
+
+
+def _clean_text(text: str | None) -> str:
+    return _SPECIAL_TOKEN_RE.sub("", text or "").strip()
 
 
 class PhaseExecutor(Executor):
@@ -249,7 +264,7 @@ class PhaseExecutor(Executor):
             self._store.open_questions(), trig.answers,
             self._store.read_report(self._spec.report_filename),
         )
-        text = await self._invoke(prompt)
+        text = await self._invoke_report(prompt)
         self._store.write_report(self._spec.report_filename, text)
         print(f"  revised: {self._spec.executor_id}")
         await ctx.send_message(RevisionDone(self._spec.name, self._spec.unit))
@@ -260,10 +275,10 @@ class PhaseExecutor(Executor):
             self._spec, self._spec.load_sources(), self._store.memory_text(),
             self._store.open_questions(),
         )
-        text = await self._invoke(prompt)
+        text = await self._invoke_report(prompt)
         if self._store.memory_key_count(self._spec.name, self._spec.unit) == before:
             # ponytail: one bounded nudge, then proceed and note the gap
-            await self._invoke(_NUDGE.format(report=text))
+            await self._invoke(_NUDGE_PREFIX + text)
             if self._store.memory_key_count(self._spec.name, self._spec.unit) == before:
                 text += _MEMORY_GAP_NOTE
         self._store.write_report(self._spec.report_filename, text)
@@ -275,6 +290,17 @@ class PhaseExecutor(Executor):
         else:
             await ctx.send_message(PhaseDone(self._spec.name))
 
+    async def _invoke_report(self, prompt: str) -> str:
+        """Invoke expecting a report back; retry once if the model produced none.
+
+        Tool-heavy runs sometimes end with empty/junk final text. The agent keeps
+        its session across run() calls, so the retry sees the full exploration.
+        """
+        text = await self._invoke(prompt)
+        if not text:
+            text = await self._invoke(_REPORT_RETRY)
+        return text or "(no report produced by the model)"
+
     async def _invoke(self, prompt: str) -> str:
         result = await self._agent.run(prompt)
-        return result.text or "(no text returned by the model)"
+        return _clean_text(result.text)

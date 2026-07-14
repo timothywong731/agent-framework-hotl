@@ -1,0 +1,29 @@
+[project]
+name = "hotl-demo"
+version = "0.1.0"
+description = "Human-on-the-loop pipeline demo on Microsoft Agent Framework"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "agent-framework (~=1.11)",
+    "agent-framework-ollama (==1.0.0b260709)",
+    "pypdf (>=5,<7)",
+    "fpdf2 (>=2.8,<3)",
+]
+
+[project.scripts]
+demo = "hotl_demo.main:run"
+
+[tool.poetry]
+packages = [{ include = "hotl_demo", from = "src" }]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "~=8.3"
+
+[build-system]
+requires = ["poetry-core>=2.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["ollama: live end-to-end test requiring a running Ollama server"]
+addopts = "-m 'not ollama'"

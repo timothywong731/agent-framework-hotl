@@ -1,3 +1,4 @@
+"""Review gate: request emission, verdict handling, re-run queue, review-once rule."""
 import pytest
 
 from conftest import FakeCtx

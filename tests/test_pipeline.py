@@ -1,3 +1,4 @@
+"""Graph assembly: edge predicates, join barrier, and an LLM-free drive of the real graph."""
 from pathlib import Path
 
 import pytest

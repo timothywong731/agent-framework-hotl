@@ -1,3 +1,4 @@
+"""Final report: adjudication-log rendering, prompt assembly, executor output."""
 import pytest
 
 from conftest import FakeAgent, FakeCtx

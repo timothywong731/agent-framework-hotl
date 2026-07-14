@@ -1,3 +1,4 @@
+"""CLI runner helpers: preflight model matching and host normalization."""
 import pytest
 
 from hotl_demo.main import _prompt_human, model_present, normalize_host

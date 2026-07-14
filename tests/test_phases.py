@@ -1,3 +1,4 @@
+"""Prompt-file parsing, spec discovery, source loaders, prompt rendering."""
 from pathlib import Path
 
 from hotl_demo.phases import (

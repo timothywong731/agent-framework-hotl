@@ -1,3 +1,4 @@
+"""ArtifactStore: memory shape/merge, ledger append/resolve, reports, concurrency."""
 import json
 import threading
 

@@ -1,3 +1,4 @@
+"""PhaseExecutor runs against a scripted agent: reports, nudges, retries, routing."""
 import pytest
 
 from conftest import FakeAgent, FakeCtx

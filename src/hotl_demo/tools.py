@@ -1,4 +1,12 @@
-"""The three agent tools. Docstrings below are the tool descriptions the LLM sees."""
+"""Agent tools. Tool docstrings are the descriptions the LLM sees - they are
+written for the model, not for human readers.
+
+Two factories: :func:`make_tools` builds the three core tools every phase
+agent carries (scratchpad steering, ledger raises, memory writes), bound to
+the calling phase so agents cannot write outside their own section;
+:func:`make_repo_tools` builds the exploration pair only deep_analysis
+analyzers get, bound to their repo.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,12 +21,45 @@ SCRATCHPAD_PATH = Path(__file__).resolve().parents[2] / "scratchpad.md"
 
 
 def ensure_scratchpad(path: Path = SCRATCHPAD_PATH) -> None:
+    """Create the steering file empty if missing; NEVER truncate an existing one.
+
+    The human may have written guidance before the run started - that content
+    must survive.
+
+    Args:
+        path: Scratchpad location; defaults to the repo-root file.
+
+    Example:
+        >>> ensure_scratchpad(Path("scratchpad.md"))  # doctest: +SKIP
+    """
     if not path.exists():
         path.write_text("", encoding="utf-8")
 
 
 def make_tools(store: ArtifactStore, phase: str, unit: str | None = None,
                scratchpad_path: Path = SCRATCHPAD_PATH) -> list:
+    """Build the three core tools bound to one phase agent.
+
+    The closures capture ``(store, phase, unit)`` so the LLM never supplies -
+    and can never spoof - its own identity: a deep_analysis analyzer for
+    ``oms-monolith`` physically cannot write another repo's memory section.
+
+    Args:
+        store: The run's shared artifact store.
+        phase: Owning phase name (stamped onto ledger entries/memory writes).
+        unit: Owning repo for analyzer instances, else ``None``.
+        scratchpad_path: Steering file surfaced by ``read_scratchpad``.
+
+    Returns:
+        ``[read_scratchpad, raise_question, update_memory]`` - decorated
+        tool functions ready to hand to an ``Agent``.
+
+    Example:
+        >>> read_scratchpad, raise_question, update_memory = make_tools(
+        ...     store, "discovery")  # doctest: +SKIP
+        >>> raise_question("In scope?", "docs omit recon", "in scope")  # doctest: +SKIP
+        'Recorded q-1. Proceed using your stated default assumption.'
+    """
     @tool(approval_mode="never_require")
     def read_scratchpad() -> str:
         """Read the human operator's scratchpad. It may contain steering guidance,
@@ -36,6 +77,8 @@ def make_tools(store: ArtifactStore, phase: str, unit: str | None = None,
         Use when evidence conflicts or a decision-critical fact is missing.
         Provide the question, the evidence context, and the default assumption
         you will proceed with until a human answers. Returns the question id."""
+        # Validation failures return ERROR strings (never raise): the framework
+        # feeds them back so the model can correct its call.
         if not question.strip() or not default_assumption.strip():
             return "ERROR: question and default_assumption must both be non-empty. Retry with both."
         qid = store.raise_question(
@@ -58,7 +101,28 @@ def make_tools(store: ArtifactStore, phase: str, unit: str | None = None,
 
 
 def make_repo_tools(repo_dir: Path) -> list:
-    """Exploration tools for deep_analysis: the analyzer walks the repo itself."""
+    """Build the exploration tools for one deep_analysis analyzer.
+
+    The analyzer's prompt does not contain its repository - these two tools
+    are how it sees the code, which is what makes the exploration genuinely
+    agentic (and observable: any file-level finding must have come through
+    ``read_file``).
+
+    Args:
+        repo_dir: The repository this analyzer owns; resolved once and used
+            as the traversal guard boundary.
+
+    Returns:
+        ``[list_files, read_file]`` decorated tool functions.
+
+    Example:
+        >>> list_files, read_file = make_repo_tools(
+        ...     Path("sample_data/repos/oms-monolith"))
+        >>> "s3_uploader.py" in list_files()
+        True
+        >>> read_file("../oms-batch-recon/config.py").startswith("ERROR")
+        True
+    """
     root = Path(repo_dir).resolve()
 
     @tool(approval_mode="never_require")
@@ -72,12 +136,15 @@ def make_repo_tools(repo_dir: Path) -> list:
     def read_file(path: str) -> str:
         """Read one file from the repository by its relative path exactly as
         shown by list_files. Returns the full file contents."""
+        # Resolve then containment-check: rejects ../ traversal and absolute
+        # paths in one test, symlinks included.
         target = (root / path).resolve()
         if not target.is_relative_to(root):
             return "ERROR: path escapes the repository. Use a relative path from list_files."
         if not target.is_file():
             return f"ERROR: no such file: {path}. Call list_files to see valid paths."
         text = target.read_text(encoding="utf-8", errors="replace")
+        # Cap pathological reads; sample repo files are far smaller.
         if len(text) > 20_000:
             text = text[:20_000] + "\n... (truncated)"
         return text

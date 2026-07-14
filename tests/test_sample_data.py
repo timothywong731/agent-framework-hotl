@@ -1,3 +1,4 @@
+"""Guardrail: every planted gap/conflict survives in the committed corpus."""
 from pathlib import Path
 
 from pypdf import PdfReader

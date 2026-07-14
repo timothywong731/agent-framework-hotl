@@ -1,3 +1,4 @@
+"""Core agent tools (scratchpad/ledger/memory binding) and repo-exploration tools."""
 from pathlib import Path
 
 import pytest

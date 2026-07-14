@@ -1,4 +1,11 @@
-"""CLI runner: preflight, run the workflow, prompt the human at the review gate."""
+"""CLI runner: preflight, run the workflow, prompt the human at the review gate.
+
+Entry point for ``poetry run demo``. The run loop mirrors the framework's
+request-info pattern: stream events, collect ``request_info`` payloads while
+the workflow idles at the review gate, ask the human in the terminal, resume
+with ``run(responses={...})``, repeat until an iteration ends with no pending
+requests.
+"""
 from __future__ import annotations
 
 import argparse
@@ -17,6 +24,22 @@ DEFAULT_MODEL = "gemma4:31b"
 
 
 def model_present(tags: dict, model: str) -> bool:
+    """Check whether Ollama's tag list contains the requested model.
+
+    Args:
+        tags: Parsed ``GET /api/tags`` response
+            (``{"models": [{"name": ...}, ...]}``).
+        model: Requested tag, e.g. ``"gemma4:31b"`` or bare ``"gemma4"``.
+
+    Returns:
+        True when the exact tag is present.
+
+    Example:
+        >>> model_present({"models": [{"name": "gemma4:31b"}]}, "gemma4:31b")
+        True
+        >>> model_present({"models": [{"name": "gemma4:31b"}]}, "gemma4")
+        False
+    """
     # Ollama resolves a bare name strictly to '<name>:latest' - mirror that,
     # or preflight passes models the chat client will 404 on.
     names = {m.get("name", "") for m in tags.get("models", [])}
@@ -25,6 +48,21 @@ def model_present(tags: dict, model: str) -> bool:
 
 
 def normalize_host(host: str) -> str:
+    """Give a scheme-less ``OLLAMA_HOST`` value an explicit ``http://`` scheme.
+
+    Args:
+        host: Host value, with or without scheme, with or without trailing
+            slash.
+
+    Returns:
+        A urllib-usable base URL.
+
+    Example:
+        >>> normalize_host("127.0.0.1:11434")
+        'http://127.0.0.1:11434'
+        >>> normalize_host("https://ollama.local/")
+        'https://ollama.local'
+    """
     # Ollama docs use scheme-less OLLAMA_HOST (e.g. 127.0.0.1:11434) and the
     # ollama client accepts it; urllib needs an explicit scheme.
     host = host.rstrip("/")
@@ -32,6 +70,15 @@ def normalize_host(host: str) -> str:
 
 
 def preflight(base_url: str, model: str) -> None:
+    """Fail fast, with an actionable message, before any LLM work starts.
+
+    Args:
+        base_url: Ollama base URL (already normalized).
+        model: Model tag the run will use.
+
+    Raises:
+        SystemExit: Server unreachable, or model not pulled.
+    """
     try:
         with urllib.request.urlopen(f"{base_url}/api/tags", timeout=5) as resp:
             tags = json.load(resp)
@@ -45,6 +92,15 @@ def preflight(base_url: str, model: str) -> None:
 
 
 def _prompt_human(q: LedgerQuestionRequest) -> str:
+    """Present one ledger question in the terminal and read the verdict.
+
+    Args:
+        q: The request payload emitted by the review gate.
+
+    Returns:
+        The raw input line - non-empty text is an authoritative answer,
+        empty/whitespace (or a closed stdin) means decline.
+    """
     where = f"{q.phase}[{q.unit}]" if q.unit else q.phase
     print(f"\n[{q.question_id}] ({where}) {q.question}")
     print(f"      Evidence: {q.context}")
@@ -57,6 +113,7 @@ def _prompt_human(q: LedgerQuestionRequest) -> str:
 
 
 async def _amain() -> None:
+    """Parse args, preflight, then drive the workflow's run/pause/resume loop."""
     parser = argparse.ArgumentParser(description="HOTL cloud migration readiness demo")
     parser.add_argument("--model", default=os.environ.get("OLLAMA_MODEL", DEFAULT_MODEL),
                         help="Ollama model tag (default: %(default)s)")
@@ -76,6 +133,9 @@ async def _amain() -> None:
 
     responses: dict[str, str] | None = None
     while True:
+        # First iteration kicks the workflow off; later iterations resume the
+        # SAME workflow instance with the human's responses (state persists
+        # across run() calls - that is the framework's pause/resume contract).
         stream = (workflow.run("start", stream=True) if responses is None
                   else workflow.run(stream=True, responses=responses))
         pending: dict[str, LedgerQuestionRequest] = {}
@@ -85,12 +145,17 @@ async def _amain() -> None:
             elif event.type == "output":
                 print(f"\nFinal report: {event.data}")
         if not pending:
-            break
+            break  # the run finished without pausing: we are done
         responses = {rid: _prompt_human(q) for rid, q in pending.items()}
     print(f"Run artifacts: {run_dir}")
 
 
 def run() -> None:
+    """Synchronous entry point for the ``demo`` poetry script.
+
+    Example:
+        $ poetry run demo --model gemma4:31b
+    """
     try:
         asyncio.run(_amain())
     except KeyboardInterrupt:

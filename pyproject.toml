@@ -21,6 +21,7 @@ packages = [{ include = "hotl_demo", from = "src" }]
 [tool.poetry.group.dev.dependencies]
 pytest = "~=8.3"
 pytest-asyncio = "^1.4.0"
+pymarkdownlnt = "^0.9.39"
 
 [build-system]
 requires = ["poetry-core>=2.0"]

@@ -1,7 +1,9 @@
 """Live steering: the scratchpad watermark and the notification middleware."""
 from pathlib import Path
 
-from hotl_demo.steering import ScratchpadWatch
+import pytest
+
+from hotl_demo.steering import ScratchpadWatch, make_steering_middleware
 
 
 def _watch(tmp_path: Path, initial: str | None = None) -> tuple[ScratchpadWatch, Path]:
@@ -55,3 +57,99 @@ def test_cleared_content_returns_empty_then_new_content_reports(tmp_path):
     assert watch.poll() == ""
     pad.write_text("new guidance", encoding="utf-8")
     assert watch.poll() == "new guidance"
+
+
+class FakeInjector:
+    """Records enqueue_messages calls in place of MessageInjectionMiddleware."""
+
+    def __init__(self):
+        self.calls = []  # list[tuple[session, messages]]
+
+    def enqueue_messages(self, session, messages):
+        self.calls.append((session, messages))
+
+
+class FakeFunctionContext:
+    """Duck-typed FunctionInvocationContext: the middleware only reads .session."""
+
+    def __init__(self, session="session-sentinel"):
+        self.session = session
+
+
+async def _call(mw, context):
+    """Invoke the middleware, recording whether call_next was awaited."""
+    awaited = []
+
+    async def call_next():
+        awaited.append(True)
+
+    await mw(context, call_next)
+    return awaited
+
+
+@pytest.mark.asyncio
+async def test_change_is_enqueued_once_with_notice_wrapping(tmp_path):
+    watch, pad = _watch(tmp_path, "original")
+    injector = FakeInjector()
+    mw = make_steering_middleware(watch, injector, "analyze:oms-monolith")
+    ctx = FakeFunctionContext()
+
+    assert await _call(mw, ctx) == [True]  # first call baselines
+    assert injector.calls == []
+
+    pad.write_text("prioritise the Oracle licensing question", encoding="utf-8")
+    await _call(mw, ctx)
+
+    assert len(injector.calls) == 1
+    session, messages = injector.calls[0]
+    assert session == "session-sentinel"
+    assert len(messages) == 1
+    assert "prioritise the Oracle licensing question" in messages[0]
+    assert "STEERING UPDATE" in messages[0]
+
+    await _call(mw, ctx)
+    assert len(injector.calls) == 1  # enqueued once, not on every later tool call
+
+
+@pytest.mark.asyncio
+async def test_call_next_is_always_awaited_even_with_no_change(tmp_path):
+    watch, _ = _watch(tmp_path, "original")
+    mw = make_steering_middleware(watch, FakeInjector(), "discovery")
+    assert await _call(mw, FakeFunctionContext()) == [True]
+    assert await _call(mw, FakeFunctionContext()) == [True]
+
+
+@pytest.mark.asyncio
+async def test_cleared_scratchpad_enqueues_nothing(tmp_path):
+    # Withdrawing guidance is not new guidance to act on.
+    watch, pad = _watch(tmp_path, "original")
+    injector = FakeInjector()
+    mw = make_steering_middleware(watch, injector, "discovery")
+    await _call(mw, FakeFunctionContext())
+    pad.write_text("", encoding="utf-8")
+    await _call(mw, FakeFunctionContext())
+    assert injector.calls == []
+
+
+@pytest.mark.asyncio
+async def test_missing_session_is_skipped_not_raised(tmp_path):
+    watch, pad = _watch(tmp_path, "original")
+    injector = FakeInjector()
+    mw = make_steering_middleware(watch, injector, "discovery")
+    await _call(mw, FakeFunctionContext(session=None))
+    pad.write_text("new guidance", encoding="utf-8")
+    await _call(mw, FakeFunctionContext(session=None))  # must not raise
+    assert injector.calls == []
+
+
+@pytest.mark.asyncio
+async def test_notice_is_brace_safe(tmp_path):
+    # The scratchpad is human-written: braces must survive verbatim.
+    watch, pad = _watch(tmp_path, "original")
+    injector = FakeInjector()
+    mw = make_steering_middleware(watch, injector, "discovery")
+    await _call(mw, FakeFunctionContext())
+    pad.write_text('use {placeholder} and {"json": true}', encoding="utf-8")
+    await _call(mw, FakeFunctionContext())
+    assert '{placeholder}' in injector.calls[0][1][0]
+    assert '{"json": true}' in injector.calls[0][1][0]

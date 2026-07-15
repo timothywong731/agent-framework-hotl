@@ -20,12 +20,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 import yaml
-from agent_framework import Agent, Executor, WorkflowContext, handler
+from agent_framework import Agent, Executor, MessageInjectionMiddleware, WorkflowContext, handler
 from agent_framework.ollama import OllamaChatClient
 from jinja2 import Environment, FileSystemLoader
 from pypdf import PdfReader
 
 from .artifacts import PHASES, REPOS, ArtifactStore
+from .steering import ScratchpadWatch, make_steering_middleware
 from .tools import SCRATCHPAD_PATH, make_repo_tools, make_tools
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -461,9 +462,14 @@ class PhaseExecutor(Executor):
     * ``on_revision``: re-run with human answers marked authoritative,
       overwrite the report, emit ``RevisionDone`` back to the review gate.
 
-    The wrapped ``Agent`` keeps its session across ``run()`` calls, which is
-    what makes the bounded memory nudge and report retry effective - the
-    follow-up turn sees the whole earlier exploration.
+    Each run cycle mints ONE ``AgentSession`` shared by every turn in it, which
+    is what makes the bounded memory nudge and report retry effective - the
+    follow-up turn sees the whole earlier exploration. This must be explicit:
+    ``Agent.run(session=None)`` is stateless per call. Revisions mint a fresh
+    session, since the revision prompt is self-contained by design.
+
+    Scratchpad edits made mid-run are pushed into the live session by the
+    steering middleware (see :mod:`hotl_demo.steering`).
 
     Example:
         >>> spec = build_phase_specs(Path("sample_data"))[0]
@@ -488,12 +494,22 @@ class PhaseExecutor(Executor):
         if spec.repo_dir is not None:
             # Analyzers explore their repo agentically instead of receiving it.
             tools += make_repo_tools(spec.repo_dir)
+        # MessageInjectionMiddleware (chat) does delivery; steering_mw (function)
+        # does detection. A mixed middleware list is a supported MiddlewareTypes
+        # shape, not a workaround.
+        injector = MessageInjectionMiddleware()
+        steering_mw = make_steering_middleware(
+            ScratchpadWatch(scratchpad_path), injector, spec.executor_id
+        )
         self._agent = agent or Agent(
             client=OllamaChatClient(),  # model comes from OLLAMA_MODEL env var
             name=spec.executor_id.replace(":", "_"),
             instructions="You are one phase of a multi-agent assessment pipeline.",
             tools=tools,
+            middleware=[injector, steering_mw],
         )
+        # Set per run cycle by _run_initial/on_revision; not shared across cycles.
+        self._session = None
 
     @handler
     async def on_start(self, go: str, ctx: WorkflowContext[PhaseDone | AnalysisDone]) -> None:
@@ -526,6 +542,7 @@ class PhaseExecutor(Executor):
                 answered ledger entries for this ``(phase, unit)``.
             ctx: Workflow context; emits ``RevisionDone`` back to the gate.
         """
+        self._session = self._agent.create_session()
         prompt = build_revision_prompt(
             self._spec, self._spec.load_sources(), self._store.memory_text(),
             self._store.open_questions(), trig.answers,
@@ -548,6 +565,7 @@ class PhaseExecutor(Executor):
         Args:
             ctx: Workflow context used to emit ``AnalysisDone``/``PhaseDone``.
         """
+        self._session = self._agent.create_session()
         before = self._store.memory_key_count(self._spec.name, self._spec.unit)
         prompt = build_initial_prompt(
             self._spec, self._spec.load_sources(), self._store.memory_text(),
@@ -590,7 +608,7 @@ class PhaseExecutor(Executor):
         return text or "(no report produced by the model)"
 
     async def _invoke(self, prompt: str) -> str:
-        """Run one agent turn and return its cleaned final text.
+        """Run one agent turn in the current cycle's session and return its text.
 
         Args:
             prompt: Prompt for this turn.
@@ -598,5 +616,5 @@ class PhaseExecutor(Executor):
         Returns:
             Final text with leaked special tokens stripped; may be empty.
         """
-        result = await self._agent.run(prompt)
+        result = await self._agent.run(prompt, session=self._session)
         return _clean_text(result.text)

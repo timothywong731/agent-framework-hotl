@@ -65,7 +65,11 @@ class _DriveAgent:
     def __init__(self, name, store, calls):
         self.name, self.store, self.calls = name, store, calls
 
-    async def run(self, prompt):
+    def create_session(self, *, session_id=None):
+        """Mirror the real Agent's session API; PhaseExecutor mints one per cycle."""
+        return f"{self.name}-session"
+
+    async def run(self, prompt, *, session=None):
         if self.name == "final_report":
             self.calls.append((self.name, "report", prompt))
             return type("R", (), {"text": "FINAL-VERDICT"})()

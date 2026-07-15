@@ -51,9 +51,14 @@ class FakeAgent:
     Returns queued texts one per :meth:`run` call (empty string once
     exhausted) and records every prompt for assertions.
 
+    Mirrors the real Agent's session API so executors can mint a session per
+    run cycle and pass it to every ``run()`` in that cycle.
+
     Attributes:
         texts: Remaining scripted responses.
         prompts: Prompts received so far.
+        sessions: The ``session`` passed to each :meth:`run` call, in order.
+        created_sessions: Sessions handed out by :meth:`create_session`.
         side_effect: Optional callable invoked with each prompt - used to
             simulate tool side effects (e.g. writing memory) during a run.
 
@@ -68,11 +73,20 @@ class FakeAgent:
     def __init__(self, texts, side_effect=None):
         self.texts = list(texts)
         self.prompts = []
+        self.sessions = []
+        self.created_sessions = []
         self.side_effect = side_effect  # optional callable(prompt) run per call
 
-    async def run(self, prompt):
-        """Record the prompt, fire the side effect, pop the next scripted text."""
+    def create_session(self, *, session_id=None):
+        """Hand out an opaque session sentinel, as the real Agent does."""
+        session = f"session-{len(self.created_sessions) + 1}"
+        self.created_sessions.append(session)
+        return session
+
+    async def run(self, prompt, *, session=None):
+        """Record prompt + session, fire the side effect, pop the next text."""
         self.prompts.append(prompt)
+        self.sessions.append(session)
         if self.side_effect:
             self.side_effect(prompt)
         return FakeAgentResult(self.texts.pop(0) if self.texts else "")

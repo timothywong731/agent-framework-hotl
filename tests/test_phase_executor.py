@@ -124,3 +124,33 @@ async def test_nudge_is_brace_safe(store, tmp_path):
     await _executor(store, tmp_path, spec, agent).on_start("start", ctx)
     assert "{braces}" in agent.prompts[1]                   # embedded verbatim, no crash
     assert store.read_report(spec.report_filename).startswith("# Report with {braces}")
+
+
+@pytest.mark.asyncio
+async def test_one_session_per_run_cycle_shared_by_every_turn(store, tmp_path):
+    # The nudge/retry turn must see the initial turn's exploration, which only
+    # works if both turns share one session. Regression guard: run(session=None)
+    # is stateless per call in agent-framework, so the session must be explicit.
+    spec = _spec()
+    agent = FakeAgent(["# Report", "nudge reply"])  # no memory written -> nudge fires
+    await _executor(store, tmp_path, spec, agent).on_start("start", FakeCtx())
+
+    assert len(agent.sessions) == 2
+    assert agent.sessions[0] is not None
+    assert agent.sessions[0] == agent.sessions[1]   # same session across the cycle
+    assert len(agent.created_sessions) == 1         # exactly one minted
+
+
+@pytest.mark.asyncio
+async def test_revision_cycle_gets_a_fresh_session(store, tmp_path):
+    # Revisions are self-contained by design (the prompt carries previous_report
+    # and the human answers), so they must not inherit the initial exploration.
+    spec = _spec()
+    store.write_report(spec.report_filename, "OLD")
+    agent = FakeAgent(["# Report", "nudge reply", "NEW"])
+    executor = _executor(store, tmp_path, spec, agent)
+    await executor.on_start("start", FakeCtx())
+    await executor.on_revision(RevisionTrigger("discovery", None, answers=[]), FakeCtx())
+
+    assert len(agent.created_sessions) == 2
+    assert agent.sessions[0] != agent.sessions[-1]  # revision ran in a new session

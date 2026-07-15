@@ -1,7 +1,16 @@
-"""CLI runner helpers: preflight model matching and host normalization."""
+"""CLI runner helpers: preflight matching, host normalization, review.jsonl."""
+import json
+
 import pytest
 
-from hotl_demo.main import _prompt_human, model_present, normalize_host
+from hotl_demo.main import (
+    _prompt_human,
+    map_answers,
+    model_present,
+    normalize_host,
+    parse_review_answers,
+    render_review_lines,
+)
 from hotl_demo.review import LedgerQuestionRequest
 
 TAGS = {"models": [{"name": "gemma4:31b"}, {"name": "qwen3.6:latest"}]}
@@ -36,3 +45,43 @@ def test_prompt_human_declines_on_eof(monkeypatch, capsys):
     q = LedgerQuestionRequest("q-1", "discovery", None, "Scope?", "ctx", "in scope")
     assert _prompt_human(q) == ""                      # decline, not a crash
     assert "declining" in capsys.readouterr().out
+
+
+def _q(qid):
+    return {"id": qid, "phase": "discovery", "unit": None, "question": "Q?",
+            "context": "c", "default_assumption": "d", "status": "open",
+            "human_answer": None, "asked_at": "t"}
+
+
+def test_render_review_lines_seeds_id_and_answer_only():
+    # The questions stay in ledger.jsonl (agent-curated, read-only); the
+    # answer sheet carries ONLY the human's input, joined on id.
+    lines = [json.loads(l) for l in render_review_lines([_q("q-1"), _q("q-2")]).splitlines()]
+    assert lines == [{"id": "q-1", "answer": ""}, {"id": "q-2", "answer": ""}]
+
+
+def test_parse_review_answers_round_trip_and_blank_lines():
+    text = '{"id": "q-1", "answer": "yes, in scope"}\n\n{"id": "q-2", "answer": ""}\n'
+    assert parse_review_answers(text) == {"q-1": "yes, in scope", "q-2": ""}
+
+
+@pytest.mark.parametrize("bad, hint", [
+    ('{"id": "q-1", "answer": "ok"}\nnot json\n', "line 2"),
+    ('["q-1", "ok"]\n', "line 1"),                          # not an object
+    ('{"answer": "ok"}\n', "line 1"),                       # missing id
+    ('{"id": "q-1", "answer": null}\n', "line 1"),          # non-string answer
+    ('{"id": "q-1", "answer": "a"}\n{"id": "q-1", "answer": "b"}\n', "line 2"),
+])
+def test_parse_review_answers_is_loud_on_malformed_input(bad, hint):
+    # A parse error must NEVER degrade into "decline" - that would silently
+    # discard the human's gathered answers and ship a defaults-only report.
+    with pytest.raises(ValueError, match=hint):
+        parse_review_answers(bad)
+
+
+def test_map_answers_missing_id_declines_and_unknown_ids_surface():
+    pending = {"r1": LedgerQuestionRequest("q-1", "discovery", None, "Q?", "c", "d"),
+               "r2": LedgerQuestionRequest("q-2", "discovery", None, "Q?", "c", "d")}
+    responses, unknown = map_answers(pending, {"q-1": "yes", "q-99": "ghost"})
+    assert responses == {"r1": "yes", "r2": ""}   # q-2 unanswered -> decline
+    assert unknown == ["q-99"]                    # warned by the caller, ignored

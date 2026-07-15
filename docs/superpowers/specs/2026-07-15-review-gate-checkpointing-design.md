@@ -170,7 +170,7 @@ Every failure here must be **loud**, because the failure mode is a plausible-loo
 
 - **Malformed `review.jsonl` line** → abort with the line number. A parse error must **never** degrade to "decline"; that would silently discard days of gathered answers and proceed on defaults.
 - **No gate checkpoint found** → actionable message distinguishing the two real causes: the run was not started with `--pause`, or a message type is missing from `ALLOWED_CHECKPOINT_TYPES` (trap 1 — remember `list_checkpoints` returns `[]` rather than raising).
-- **Ledger already fully resolved** → "this run has already been resumed"; exit without re-running. Closes trap 3, and is file-derived like everything else.
+- **Ledger shows any resolved question** → a resume already applied verdicts (a `--pause` run resolves nothing before its resume), so refuse: with `final_report.md` present → "already resumed"; without → "crashed mid-revision; start a fresh run". Closes trap 3, and is file-derived like everything else. **Never inferred from the answer sheet**: an emptied `review.jsonl` on a first resume is a legitimate decline-everything (missing id = decline) and must resume normally — adversarial review caught an earlier sheet-based guard misdiagnosing exactly that as a crashed resume.
 - **`id` in `review.jsonl` with no matching pending request** → warn and ignore.
 - **Pending request with no `id` in the file** → decline (consistent with "empty = decline").
 - **Graph changed between pause and resume** (prompt files edited, a repo added) → the checkpoint carries a `graph_signature_hash`; surface the framework's mismatch error as "the pipeline changed since this run was paused; start a fresh run."

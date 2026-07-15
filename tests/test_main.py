@@ -5,6 +5,7 @@ import pytest
 
 from hotl_demo.main import (
     _prompt_human,
+    already_resumed,
     map_answers,
     model_present,
     normalize_host,
@@ -85,3 +86,15 @@ def test_map_answers_missing_id_declines_and_unknown_ids_surface():
     responses, unknown = map_answers(pending, {"q-1": "yes", "q-99": "ghost"})
     assert responses == {"r1": "yes", "r2": ""}   # q-2 unanswered -> decline
     assert unknown == ["q-99"]                    # warned by the caller, ignored
+
+
+def test_already_resumed_derives_from_ledger_not_the_sheet():
+    # A --pause run resolves NO questions before its resume (verdicts are
+    # applied only by a resume), so any non-open entry proves one already ran.
+    # Reviewers caught the old guard inferring this from the answer sheet: an
+    # EMPTIED review.jsonl on a first resume is a legitimate decline-everything,
+    # not a crashed resume - it must not be refused.
+    assert already_resumed([]) is False
+    assert already_resumed([_q("q-1"), _q("q-2")]) is False          # all open
+    assert already_resumed([_q("q-1"), {**_q("q-2"), "status": "answered"}]) is True
+    assert already_resumed([{**_q("q-1"), "status": "declined"}]) is True

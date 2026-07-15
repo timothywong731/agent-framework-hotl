@@ -204,6 +204,31 @@ def map_answers(pending: dict[str, "LedgerQuestionRequest"],
     return responses, unknown
 
 
+def already_resumed(ledger: list[dict]) -> bool:
+    """Return whether a --pause run's verdicts were already applied.
+
+    A --pause run resolves NO questions before its resume - verdicts are
+    applied only by a resume's response handling - so any non-open entry
+    proves one already ran. Deliberately derived from the ledger, never from
+    the answer sheet: an emptied review.jsonl on a first resume is a
+    legitimate decline-everything (missing id = decline), not a crashed
+    resume, and must not be refused.
+
+    Args:
+        ledger: Full ledger, as returned by ``ArtifactStore.read_ledger``.
+
+    Returns:
+        True when any entry has been answered or declined.
+
+    Example:
+        >>> already_resumed([{"status": "open"}])
+        False
+        >>> already_resumed([{"status": "declined"}])
+        True
+    """
+    return any(e["status"] != "open" for e in ledger)
+
+
 async def _amain() -> None:
     """Parse args, preflight, then dispatch to the right flow."""
     parser = argparse.ArgumentParser(description="HOTL cloud migration readiness demo")
@@ -243,8 +268,7 @@ async def _amain() -> None:
                 f"{review_path} not found - only runs started with --pause can be resumed.")
         answers = parse_review_answers(review_path.read_text(encoding="utf-8"))
         store = ArtifactStore(run_dir, REPOS)  # reopening preserves memory + ledger
-        open_ids = {q["id"] for q in store.open_questions()}
-        if not (set(answers) & open_ids):
+        if already_resumed(store.read_ledger()):
             # Resume is NOT idempotent (a second pass would re-run every
             # revision), so refuse loudly - distinguishing the two causes.
             report = run_dir / "final_report.md"

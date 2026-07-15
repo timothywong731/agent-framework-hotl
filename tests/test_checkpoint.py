@@ -1,5 +1,6 @@
 """Checkpointing: gate-checkpoint selection, allowlist completeness, pause/resume."""
 import dataclasses
+import json
 
 import pytest
 
@@ -45,3 +46,98 @@ def test_allowlist_covers_every_message_dataclass():
                 found.add(f"{obj.__module__}:{obj.__qualname__}")
     non_messages = {"hotl_demo.phases:PhaseSpec"}   # executor config, never routed
     assert found - non_messages == set(ALLOWED_CHECKPOINT_TYPES)
+
+
+from pathlib import Path
+
+from agent_framework import FileCheckpointStorage
+
+from conftest import DriveAgent
+
+from hotl_demo.artifacts import REPOS, ArtifactStore
+from hotl_demo.main import map_answers, parse_review_answers, render_review_lines
+from hotl_demo.pipeline import build_workflow
+from hotl_demo.review import LedgerQuestionRequest
+
+
+@pytest.mark.asyncio
+async def test_pause_resume_cycle_revises_each_target_exactly_once(tmp_path, monkeypatch):
+    """The spike that found the 5x bug, as a permanent regression guard.
+
+    Process 1 runs to the gate with checkpointing on. Process 2 is simulated
+    with a FRESH store and a FRESH workflow over the same run dir: restore the
+    gate checkpoint, answer everything via the review.jsonl round-trip, and
+    assert the resumed gate dispatches ONE ordered revision queue - not one
+    per answer.
+    """
+    from hotl_demo import phases, report
+    from hotl_demo.pipeline import (ALLOWED_CHECKPOINT_TYPES, WORKFLOW_NAME,
+                                    gate_checkpoint)
+
+    monkeypatch.setenv("OLLAMA_MODEL", "test-model")
+    run_dir, cp_dir, data = tmp_path / "run", tmp_path / "checkpoints", Path("sample_data")
+    storage = FileCheckpointStorage(cp_dir, allowed_checkpoint_types=ALLOWED_CHECKPOINT_TYPES)
+
+    def patch_agents(store, calls):
+        def agent_factory(*_, name="", **__):
+            return DriveAgent(name, store, calls)
+        for mod in (phases, report):
+            monkeypatch.setattr(mod, "Agent", agent_factory)
+            monkeypatch.setattr(mod, "OllamaChatClient", lambda: None)
+
+    # ---- process 1: run to the gate, checkpointing on ----
+    store1, calls1 = ArtifactStore(run_dir, repos=REPOS), []
+    patch_agents(store1, calls1)
+    wf1 = build_workflow(store1, data, scratchpad_path=tmp_path / "pad.md",
+                         checkpoint_storage=storage)
+    pending1 = {}
+    async for ev in wf1.run("start", stream=True):
+        if ev.type == "request_info" and isinstance(ev.data, LedgerQuestionRequest):
+            pending1[ev.request_id] = ev.data
+    assert len(pending1) == 5
+
+    # the pause artifact: seed the sheet, then play the human filling it in
+    sheet = render_review_lines(store1.open_questions())
+    answered = "".join(
+        line.replace('"answer": ""', f'"answer": "answer to {json.loads(line)["id"]}"') + "\n"
+        for line in sheet.splitlines()
+    )
+    answers = parse_review_answers(answered)
+    assert set(answers) == {q.question_id for q in pending1.values()}
+    # decline-by-omission (q-5 is deterministically questionnaire's - it raises
+    # last) and an unknown id, exercising the sheet's edge semantics end to end
+    del answers["q-5"]
+    answers["q-99"] = "ghost"
+
+    # ---- process 2: fresh store, fresh workflow, same run dir ----
+    store2, calls2 = ArtifactStore(run_dir, repos=REPOS), []
+    patch_agents(store2, calls2)
+    wf2 = build_workflow(store2, data, scratchpad_path=tmp_path / "pad.md",
+                         checkpoint_storage=storage)
+    gate = gate_checkpoint(await storage.list_checkpoints(workflow_name=WORKFLOW_NAME))
+    assert gate is not None
+
+    pending2 = {}
+    async for ev in wf2.run(checkpoint_id=gate.checkpoint_id, stream=True):
+        if ev.type == "request_info" and isinstance(ev.data, LedgerQuestionRequest):
+            pending2[ev.request_id] = ev.data
+    assert set(pending2) == set(pending1)      # stable request ids
+    assert calls2 == []                        # restore re-ran ZERO phases
+
+    outputs = []
+    responses, unknown = map_answers(pending2, answers)
+    assert unknown == ["q-99"]                 # the ghost id surfaced, not applied
+    async for ev in wf2.run(stream=True, responses=responses):
+        assert ev.type != "request_info"       # review-once survives the restart
+        if ev.type == "output":
+            outputs.append(ev.data)
+
+    # THE regression assertions: one ordered queue, not one queue per answer.
+    # questionnaire was declined by omission, so exactly four targets revise.
+    revisions = [name for name, kind, _ in calls2 if kind == "revision"]
+    assert revisions == ["discovery", "analyze_oms-monolith", "analyze_oms-batch-recon",
+                         "enterprise_context"]
+    assert [name for name, kind, _ in calls2 if kind == "report"] == ["final_report"]
+    assert outputs == [str(store2.run_dir / "final_report.md")]
+    statuses = [e["status"] for e in store2.read_ledger()]
+    assert statuses == ["answered"] * 4 + ["declined", "open"]  # open: raised mid-revision

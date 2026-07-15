@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FakeCtx
+from conftest import DRIVE_TARGETS, DriveAgent, FakeCtx
 
 from hotl_demo.artifacts import REPOS, ArtifactStore
 from hotl_demo.phases import AnalysisDone, PhaseDone, ReportTrigger, RevisionDone, RevisionTrigger
@@ -49,41 +49,6 @@ def test_build_workflow_smoke_and_shape(tmp_path, monkeypatch):
 
 # -- LLM-free drive of the real assembled graph -----------------------------
 
-_TARGETS = {
-    "discovery": ("discovery", None),
-    "analyze_oms-monolith": ("deep_analysis", "oms-monolith"),
-    "analyze_oms-batch-recon": ("deep_analysis", "oms-batch-recon"),
-    "enterprise_context": ("enterprise_context", None),
-    "questionnaire": ("questionnaire", None),
-}
-
-
-class _DriveAgent:
-    """Stands in for every Agent in the graph: raises one question per phase on
-    the initial pass, one extra during discovery's revision, records call order."""
-
-    def __init__(self, name, store, calls):
-        self.name, self.store, self.calls = name, store, calls
-
-    def create_session(self, *, session_id=None):
-        """Mirror the real Agent's session API; PhaseExecutor mints one per cycle."""
-        return f"{self.name}-session"
-
-    async def run(self, prompt, *, session=None):
-        if self.name == "final_report":
-            self.calls.append((self.name, "report", prompt))
-            return type("R", (), {"text": "FINAL-VERDICT"})()
-        kind = "revision" if "## HUMAN ANSWERS" in prompt else "initial"
-        self.calls.append((self.name, kind, prompt))
-        phase, unit = _TARGETS[self.name]
-        if kind == "initial":
-            self.store.update_memory(phase, unit, f"finding_{len(self.calls)}", "v")
-            self.store.raise_question(phase, unit, f"Q from {self.name}?", "ctx", "default")
-        elif self.name == "discovery":
-            self.store.raise_question(phase, unit, "Raised during revision?", "ctx", "post-gate")
-        return type("R", (), {"text": f"REPORT[{self.name}][{kind}]"})()
-
-
 async def test_workflow_graph_drive_gate_revisions_report(tmp_path, monkeypatch):
     from hotl_demo import phases, report
     from hotl_demo.review import LedgerQuestionRequest
@@ -92,7 +57,7 @@ async def test_workflow_graph_drive_gate_revisions_report(tmp_path, monkeypatch)
     calls: list[tuple[str, str, str]] = []
 
     def agent_factory(*_, name="", **__):
-        return _DriveAgent(name, store, calls)
+        return DriveAgent(name, store, calls)
 
     for mod in (phases, report):
         monkeypatch.setattr(mod, "Agent", agent_factory)
@@ -104,7 +69,7 @@ async def test_workflow_graph_drive_gate_revisions_report(tmp_path, monkeypatch)
     async for ev in workflow.run("start", stream=True):
         if ev.type == "request_info" and isinstance(ev.data, LedgerQuestionRequest):
             requests[ev.request_id] = ev.data
-    assert {(q.phase, q.unit) for q in requests.values()} == set(_TARGETS.values())
+    assert {(q.phase, q.unit) for q in requests.values()} == set(DRIVE_TARGETS.values())
     initial = [name for name, kind, _ in calls if kind == "initial"]
     assert initial[0] == "discovery" and len(initial) == 5
     assert initial.index("enterprise_context") > initial.index("analyze_oms-monolith")

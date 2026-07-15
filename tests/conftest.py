@@ -90,3 +90,40 @@ class FakeAgent:
         if self.side_effect:
             self.side_effect(prompt)
         return FakeAgentResult(self.texts.pop(0) if self.texts else "")
+
+
+DRIVE_TARGETS = {
+    "discovery": ("discovery", None),
+    "analyze_oms-monolith": ("deep_analysis", "oms-monolith"),
+    "analyze_oms-batch-recon": ("deep_analysis", "oms-batch-recon"),
+    "enterprise_context": ("enterprise_context", None),
+    "questionnaire": ("questionnaire", None),
+}
+
+
+class DriveAgent:
+    """Stands in for every Agent when driving the REAL assembled graph LLM-free:
+    raises one question per phase on the initial pass, one extra during
+    discovery's revision, records call order. Shared by test_pipeline.py and
+    test_checkpoint.py (the pause/resume cycle)."""
+
+    def __init__(self, name, store, calls):
+        self.name, self.store, self.calls = name, store, calls
+
+    def create_session(self, *, session_id=None):
+        """Mirror the real Agent's session API; PhaseExecutor mints one per cycle."""
+        return f"{self.name}-session"
+
+    async def run(self, prompt, *, session=None):
+        if self.name == "final_report":
+            self.calls.append((self.name, "report", prompt))
+            return FakeAgentResult("FINAL-VERDICT")
+        kind = "revision" if "## HUMAN ANSWERS" in prompt else "initial"
+        self.calls.append((self.name, kind, prompt))
+        phase, unit = DRIVE_TARGETS[self.name]
+        if kind == "initial":
+            self.store.update_memory(phase, unit, f"finding_{len(self.calls)}", "v")
+            self.store.raise_question(phase, unit, f"Q from {self.name}?", "ctx", "default")
+        elif self.name == "discovery":
+            self.store.raise_question(phase, unit, "Raised during revision?", "ctx", "post-gate")
+        return FakeAgentResult(f"REPORT[{self.name}][{kind}]")

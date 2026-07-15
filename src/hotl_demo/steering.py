@@ -47,11 +47,27 @@ class ScratchpadWatch:
 
         Returns:
             The current text when it differs from the last poll; ``None`` when
-            unchanged, and ``None`` on the very first call - that call only
-            baselines, so an agent is never handed back the content it just
-            fetched with ``read_scratchpad``.
+            unchanged, when the file is momentarily unreadable, and on the very
+            first call - that call only baselines, so an agent is never handed
+            back the content it just fetched with ``read_scratchpad``.
         """
-        text = self._path.read_text(encoding="utf-8") if self._path.exists() else ""
+        try:
+            # The human picks the editor and therefore the encoding: a UTF-16
+            # save (Notepad "Unicode", PowerShell 5.1 ">") must not raise here.
+            # This runs AFTER call_next(), so an exception would report an
+            # already-succeeded tool call as failed - and the model might then
+            # repeat a side effect that already landed. Same errors="replace"
+            # idiom as read_file in tools.py.
+            text = (
+                self._path.read_text(encoding="utf-8", errors="replace")
+                if self._path.exists()
+                else ""
+            )
+        except OSError:
+            # Locked mid-save, or deleted between exists() and the read. Report
+            # nothing and leave the watermark untouched, so the next tool call
+            # picks the edit up rather than losing it.
+            return None
         if text == self._seen:
             return None
         # First poll establishes the baseline and reports nothing; every later

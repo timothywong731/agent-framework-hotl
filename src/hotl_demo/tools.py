@@ -65,10 +65,18 @@ def make_tools(store: ArtifactStore, phase: str, unit: str | None = None,
         """Read the human operator's scratchpad. It may contain steering guidance,
         priorities, or constraints for this assessment run. Always consult it
         before starting your work and follow any guidance it contains."""
-        if scratchpad_path.exists():
-            text = scratchpad_path.read_text(encoding="utf-8")
-            if text.strip():
-                return text
+        # The human picks the editor and therefore the encoding; this tool must
+        # still return a string rather than raise (see read_file, same idiom).
+        try:
+            text = (
+                scratchpad_path.read_text(encoding="utf-8", errors="replace")
+                if scratchpad_path.exists()
+                else ""
+            )
+        except OSError as exc:
+            return f"ERROR: could not read the scratchpad ({exc}). Proceed without operator guidance."
+        if text.strip():
+            return text
         return "The scratchpad is empty. No operator guidance provided."
 
     @tool(approval_mode="never_require")

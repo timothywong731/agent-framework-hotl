@@ -591,9 +591,10 @@ class PhaseExecutor(Executor):
     async def _invoke_report(self, prompt: str) -> str:
         """Invoke expecting a report back; retry once if the model produced none.
 
-        Tool-heavy runs sometimes end with empty/junk final text. The agent
-        keeps its session across ``run()`` calls, so the retry sees the full
-        exploration.
+        Tool-heavy runs sometimes end with empty/junk final text. The retry
+        sees the full exploration because both turns share this cycle's
+        session - which only works because ``_invoke`` passes it explicitly
+        (``Agent.run(session=None)`` is stateless per call).
 
         Args:
             prompt: The rendered initial or revision prompt.

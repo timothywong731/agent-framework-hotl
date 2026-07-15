@@ -89,3 +89,11 @@ def test_repo_tools_reject_traversal_and_missing():
     _, read_file = make_repo_tools(MONOLITH)
     assert read_file("../oms-batch-recon/config.py").startswith("ERROR")
     assert read_file("nope.py").startswith("ERROR")
+
+
+def test_read_scratchpad_survives_non_utf8_save(store, tmp_path):
+    # CLAUDE.md contract: tools return strings, never raise. The human may save
+    # the scratchpad as UTF-16 (Notepad "Unicode", PowerShell 5.1 ">").
+    pad, read_scratchpad, _, _ = _tools(store, tmp_path)
+    pad.write_bytes("focus on cost".encode("utf-16"))
+    assert isinstance(read_scratchpad(), str)  # must not raise

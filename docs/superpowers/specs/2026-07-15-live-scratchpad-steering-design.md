@@ -168,6 +168,7 @@ Adding an explicit session therefore **repairs** the retry path and makes the do
 
 ## 7. Error handling
 
+- **The read is defensive, because the human picks the editor.** `poll()` reads with `errors="replace"` and swallows `OSError`. A UTF-16 save (Notepad's "Unicode"; PowerShell 5.1's `>` redirect) would otherwise raise `UnicodeDecodeError` *after* `call_next()` had already run — reporting an already-succeeded tool call as failed and inviting the model to repeat a side effect that already landed (e.g. a second `update_memory` write), sticky for every later tool call in the phase. On `OSError` (locked mid-save, or deleted between `exists()` and the read) `poll()` returns `None` and leaves the watermark untouched, so the edit is picked up on the next tool call rather than lost. `read_scratchpad` in `tools.py` is hardened identically — same root cause, and its contract is to return strings, never raise.
 - **Clearing or deleting the scratchpad mid-run is silent, not a crash.** A missing or emptied file makes `poll()` return `""`, which the middleware's truthiness check (`if new`) skips: withdrawing guidance is not new guidance to act on, and there is nothing useful to tell the model. The watermark still advances, so if the human later writes fresh content it is delivered normally.
 - `context.session is None` (should not occur once sessions are explicit) → skip silently rather than raise. Middleware must never break a tool call.
 - The scratchpad is read, never written, by this feature; `ensure_scratchpad`'s never-truncate guarantee is unaffected.

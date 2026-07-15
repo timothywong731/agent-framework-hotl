@@ -153,3 +153,45 @@ async def test_notice_is_brace_safe(tmp_path):
     await _call(mw, FakeFunctionContext())
     assert '{placeholder}' in injector.calls[0][1][0]
     assert '{"json": true}' in injector.calls[0][1][0]
+
+
+# -- defensive reads: the human picks the editor, and therefore the encoding ----
+
+def test_non_utf8_scratchpad_does_not_raise(tmp_path):
+    # Notepad's "Unicode" and PowerShell 5.1's ">" both write UTF-16. poll()
+    # runs AFTER call_next(), so raising here would report an already-succeeded
+    # tool call as failed.
+    watch, pad = _watch(tmp_path, "original")
+    watch.poll()
+    pad.write_bytes("focus on cost".encode("utf-16"))
+    assert watch.poll() is not None  # decoded lossily, not raised
+
+
+def test_unreadable_scratchpad_leaves_watermark_alone(tmp_path):
+    # A file locked mid-save (or deleted between exists() and read) must not
+    # lose the edit: report nothing now, pick it up on the next tool call.
+    watch, pad = _watch(tmp_path, "original")
+    watch.poll()
+
+    def boom(*a, **k):
+        raise PermissionError("locked by the editor")
+
+    original_read = type(pad).read_text
+    try:
+        type(pad).read_text = boom
+        assert watch.poll() is None  # swallowed, not raised
+    finally:
+        type(pad).read_text = original_read
+
+    pad.write_text("late guidance", encoding="utf-8")
+    assert watch.poll() == "late guidance"  # watermark never advanced past it
+
+
+@pytest.mark.asyncio
+async def test_non_utf8_scratchpad_never_breaks_the_tool_call(tmp_path):
+    watch, pad = _watch(tmp_path, "original")
+    injector = FakeInjector()
+    mw = make_steering_middleware(watch, injector, "discovery")
+    await _call(mw, FakeFunctionContext())
+    pad.write_bytes("focus on cost".encode("utf-16"))
+    assert await _call(mw, FakeFunctionContext()) == [True]  # call_next still awaited

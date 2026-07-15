@@ -110,21 +110,25 @@ def gate_checkpoint(checkpoints: list[WorkflowCheckpoint]) -> WorkflowCheckpoint
 
 A pure function over a list — directly unit-testable with hand-built checkpoint objects, no framework run required.
 
-### 3.4 `review.jsonl` — the human's inbox
+### 3.4 `review.jsonl` — the human's answer sheet
 
-Written to `output/run_<timestamp>/review.jsonl` at pause, one JSON object per line:
+Written to `output/run_<timestamp>/review.jsonl` at pause, one JSON object per line, carrying **only the human's input**:
 
 ```json
-{"id": "q-1", "phase": "discovery", "unit": null, "question": "Is the 'OMS Batch Reconciliation' tool in scope?", "context": "The architecture document does not mention oms-batch-recon...", "default_assumption": "oms-batch-recon is included in migration scope", "answer": ""}
+{"id": "q-1", "answer": ""}
+{"id": "q-2", "answer": ""}
 ```
 
-JSONL rather than markdown so a frontend gets **structured fields** rather than prose to re-parse, and to match `ledger.jsonl`'s existing convention.
+The questions themselves are **not repeated here**. They already live in `ledger.jsonl` (same directory), agent-curated and read-only — a frontend reads the open entries there for display (`question`, `context`, `default_assumption`, and later `importance`) and writes answers here, joined on `id`. Duplicating those fields into `review.jsonl` would only create a second copy that can drift from the ledger.
 
-**Deliberately a separate file from `ledger.jsonl`.** The ledger is append-only and machine-owned — CLAUDE.md's rule is that every mutation goes through `ArtifactStore`. A human or frontend writing into it invites corruption against a concurrent writer. The ledger is the system's record; `review.jsonl` is the human's inbox/outbox, applied back through the existing `resolve_question` path.
+JSONL rather than markdown so the frontend gets **structured fields**, matching `ledger.jsonl`'s existing convention.
+
+**Deliberately a separate file from `ledger.jsonl`.** The ledger is append-only and machine-owned — CLAUDE.md's rule is that every mutation goes through `ArtifactStore`. A human or frontend writing into it invites corruption against a concurrent writer. The ledger is the system's record; `review.jsonl` is the human's answer sheet, applied back through the existing `resolve_question` path.
 
 - `id` is the join key (our stable `q-N`, not the framework's `request_id`).
-- `answer` is the only field the human or frontend writes. Empty or whitespace = **decline**.
-- Forward-compatible: when the sibling spec lands, `importance` joins the record, since the file is rendered from ledger entries.
+- `answer` is the only value the human or frontend supplies. Empty or whitespace = **decline**.
+- The pause seeds one `{"id": ..., "answer": ""}` line per open question, so the file doubles as the checklist of what needs answering; unedited lines decline naturally.
+- For hand-editing without a frontend, the pause message points at `ledger.jsonl` for the question text; the CLI also prints each question with its id at pause time.
 
 ### 3.5 The three flows
 
@@ -201,5 +205,6 @@ Independent — verified, not assumed. The §3.1 guard is `open_questions()`, wh
 | Default review UX | Interactive; `--pause` opt-in | Pause by default (worse live demo, rewrites the E2E's scripted stdin); pause-only (loses the interactive path) |
 | Checkpointing on by default | No — only with `--pause` | Always on (adds pickle/serialization risk and disk churn to the default path for a benefit nobody asked for) |
 | Answers file format | `review.jsonl` | Markdown (nicer to hand-edit, no escaping — but a frontend would have to re-parse prose); YAML (breaks on a colon in free text) |
+| Answers file fields | `id` + `answer` only | Repeating `question`/`context`/`default_assumption` per line (they are agent-curated, read-only, already in `ledger.jsonl` — a second copy can only drift) |
 | Answers file identity | Separate from `ledger.jsonl` | Reuse the ledger (human/frontend writes would race `ArtifactStore` and break append-only ownership) |
 | Parse failure | Abort loudly | Treat as decline (silently discards the human's work and ships a defaults-only report) |

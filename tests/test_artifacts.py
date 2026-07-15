@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from hotl_demo.artifacts import PHASES, REPOS, ArtifactStore
+from hotl_demo.artifacts import PHASES, REPOS, ArtifactStore, Importance, Phase, QuestionStatus
 
 
 @pytest.fixture()
@@ -50,8 +50,10 @@ def test_review_completed_flag(store):
 
 
 def test_raise_question_assigns_sequential_ids_and_appends(store):
-    q1 = store.raise_question("discovery", None, "Scope?", "recon repo undocumented", "in scope")
-    q2 = store.raise_question("deep_analysis", "oms-monolith", "RTO?", "not stated", "4h")
+    q1 = store.raise_question("discovery", None, "Scope?", "recon repo undocumented", "in scope",
+                              importance="medium", impact="swings the verdict")
+    q2 = store.raise_question("deep_analysis", "oms-monolith", "RTO?", "not stated", "4h",
+                              importance="medium", impact="swings the verdict")
     assert (q1, q2) == ("q-1", "q-2")
     entries = store.read_ledger()
     assert [e["id"] for e in entries] == ["q-1", "q-2"]
@@ -65,8 +67,10 @@ def test_raise_question_assigns_sequential_ids_and_appends(store):
 
 
 def test_open_questions_and_resolve(store):
-    store.raise_question("discovery", None, "Scope?", "ctx", "in scope")
-    store.raise_question("enterprise_context", None, "Region?", "ctx", "EU")
+    store.raise_question("discovery", None, "Scope?", "ctx", "in scope",
+                          importance="medium", impact="swings the verdict")
+    store.raise_question("enterprise_context", None, "Region?", "ctx", "EU",
+                          importance="medium", impact="swings the verdict")
     resolved = store.resolve_question("q-1", "answered", "yes, in scope")
     assert resolved["human_answer"] == "yes, in scope"
     assert [e["id"] for e in store.open_questions()] == ["q-2"]
@@ -84,7 +88,8 @@ def test_concurrent_raises_get_unique_ids(store):
     ids: list[str] = []
 
     def worker(i: int) -> None:
-        ids.append(store.raise_question("deep_analysis", REPOS[i % 2], f"Q{i}?", "ctx", "d"))
+        ids.append(store.raise_question("deep_analysis", REPOS[i % 2], f"Q{i}?", "ctx", "d",
+                                         importance="medium", impact="swings the verdict"))
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(20)]
     [t.start() for t in threads]
@@ -128,3 +133,44 @@ def test_reports_roundtrip(store):
     store.write_report("final_report.md", "final")  # not a phase report
     reports = store.read_all_reports()
     assert list(reports) == ["phase_01_discovery.md", "phase_03_enterprise_context.md"]
+
+
+def _raise(store, n=1, **kw):
+    kw.setdefault("importance", "medium")
+    kw.setdefault("impact", "swings the verdict")
+    return [store.raise_question("discovery", None, f"Q{i}?", "ctx", "default", **kw)
+            for i in range(n)]
+
+
+def test_enums_are_plain_strings_on_disk(store):
+    _raise(store, importance=Importance.HIGH)
+    raw = json.loads((store.run_dir / "ledger.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert raw["importance"] == "high" and isinstance(raw["importance"], str)
+    assert raw["impact"] == "swings the verdict"
+    assert raw["status"] == "open" and isinstance(raw["status"], str)
+    # str-enum equality works in both directions
+    assert raw["status"] == QuestionStatus.OPEN
+    assert Phase.DISCOVERY == "discovery" and PHASES[0] == "discovery"
+
+
+def test_defer_questions_is_atomic_and_terminal(store):
+    q1, q2, q3 = _raise(store, 3)
+    store.defer_questions([q1, q3])
+    statuses = {e["id"]: e["status"] for e in store.read_ledger()}
+    assert statuses == {q1: "deferred", q2: "open", q3: "deferred"}
+    assert store.read_ledger()[0]["human_answer"] is None   # untouched
+    assert [e["id"] for e in store.open_questions()] == [q2]
+
+
+def test_defer_questions_unknown_id_raises_before_writing(store):
+    (q1,) = _raise(store)
+    with pytest.raises(KeyError):
+        store.defer_questions([q1, "q-99"])
+    assert store.read_ledger()[0]["status"] == "open"       # nothing was written
+
+
+def test_unresolved_includes_open_and_deferred_in_ledger_order(store):
+    q1, q2, q3 = _raise(store, 3)
+    store.defer_questions([q2])
+    store.resolve_question(q1, "answered", "yes")
+    assert [e["id"] for e in store.unresolved_questions()] == [q2, q3]

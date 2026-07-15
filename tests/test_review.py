@@ -24,9 +24,12 @@ ORDER = [
 @pytest.fixture()
 def store(tmp_path):
     s = ArtifactStore(tmp_path / "run", repos=REPOS)
-    s.raise_question("discovery", None, "Scope?", "recon undocumented", "in scope")
-    s.raise_question("deep_analysis", "oms-batch-recon", "Secrets?", "hardcoded pw", "vault first")
-    s.raise_question("enterprise_context", None, "Region?", "unspecified", "EU")
+    s.raise_question("discovery", None, "Scope?", "recon undocumented", "in scope",
+                      importance="medium", impact="swings the verdict")
+    s.raise_question("deep_analysis", "oms-batch-recon", "Secrets?", "hardcoded pw", "vault first",
+                      importance="medium", impact="swings the verdict")
+    s.raise_question("enterprise_context", None, "Region?", "unspecified", "EU",
+                      importance="medium", impact="swings the verdict")
     return s
 
 

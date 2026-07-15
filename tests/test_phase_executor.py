@@ -73,7 +73,8 @@ async def test_nudge_fires_once_when_no_memory_written(store, tmp_path):
 async def test_revision_run_rewrites_report_and_sends_revision_done(store, tmp_path):
     spec = _spec()
     store.write_report(spec.report_filename, "OLD")
-    open_id = store.raise_question("enterprise_context", None, "Still open?", "ctx", "EU")
+    open_id = store.raise_question("enterprise_context", None, "Still open?", "ctx", "EU",
+                                    importance="medium", impact="swings the verdict")
     agent = FakeAgent(["NEW"])
     ctx = FakeCtx()
     trig = RevisionTrigger("discovery", None, answers=[{

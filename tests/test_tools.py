@@ -48,7 +48,7 @@ def test_read_scratchpad_missing_and_empty_and_content(store, tmp_path):
 
 def test_raise_question_appends_with_phase_and_unit(store, tmp_path):
     _, _, raise_question, _ = _tools(store, tmp_path, phase="deep_analysis", unit="oms-monolith")
-    out = raise_question("RTO?", "not stated in PDF 2", "assume 4h")
+    out = raise_question("RTO?", "not stated in PDF 2", "assume 4h", "medium", "sets the DR budget")
     assert "q-1" in out
     entry = store.read_ledger()[0]
     assert entry["phase"] == "deep_analysis"
@@ -58,9 +58,21 @@ def test_raise_question_appends_with_phase_and_unit(store, tmp_path):
 
 def test_raise_question_validates_args(store, tmp_path):
     _, _, raise_question, _ = _tools(store, tmp_path)
-    assert raise_question("", "ctx", "d").startswith("ERROR")
-    assert raise_question("Q?", "ctx", "  ").startswith("ERROR")
+    assert raise_question("", "ctx", "d", "medium", "impact").startswith("ERROR")
+    assert raise_question("Q?", "ctx", "  ", "medium", "impact").startswith("ERROR")
     assert store.read_ledger() == []
+
+
+def test_raise_question_validates_importance_and_impact(store, tmp_path):
+    _, _, raise_question, _ = _tools(store, tmp_path)
+    out = raise_question("Q?", "ctx", "d", "critical", "changes everything")
+    assert out.startswith("ERROR") and "high, medium, low" in out
+    assert raise_question("Q?", "ctx", "d", "high", "  ").startswith("ERROR")
+    ok = raise_question("Q?", "ctx", "d", " High ", "changes everything")
+    assert "q-1" in ok
+    entry = store.read_ledger()[0]
+    assert entry["importance"] == "high" and entry["impact"] == "changes everything"
+    assert store.read_ledger()[0]["status"] == "open"
 
 
 def test_update_memory_bound_to_phase_and_unit(store, tmp_path):

@@ -123,7 +123,9 @@ class DriveAgent:
         phase, unit = DRIVE_TARGETS[self.name]
         if kind == "initial":
             self.store.update_memory(phase, unit, f"finding_{len(self.calls)}", "v")
-            self.store.raise_question(phase, unit, f"Q from {self.name}?", "ctx", "default")
+            self.store.raise_question(phase, unit, f"Q from {self.name}?", "ctx", "default",
+                                       importance="medium", impact="swings the verdict")
         elif self.name == "discovery":
-            self.store.raise_question(phase, unit, "Raised during revision?", "ctx", "post-gate")
+            self.store.raise_question(phase, unit, "Raised during revision?", "ctx", "post-gate",
+                                       importance="medium", impact="swings the verdict")
         return FakeAgentResult(f"REPORT[{self.name}][{kind}]")

@@ -60,7 +60,8 @@ async def test_executor_writes_report_and_yields_path(tmp_path):
     store.write_report("phase_01_discovery.md", "D")
     for e in LEDGER:
         store.raise_question(e["phase"], e["unit"], e["question"], e["context"],
-                             e["default_assumption"])
+                             e["default_assumption"],
+                             importance="medium", impact="swings the verdict")
     store.resolve_question("q-1", "answered", "recon in scope")
     store.resolve_question("q-2", "declined", None)
     agent = FakeAgent(["# Readiness Report\nverdict..."])

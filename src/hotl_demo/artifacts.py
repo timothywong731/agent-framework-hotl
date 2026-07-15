@@ -12,9 +12,41 @@ import json
 import os
 import threading
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 
-PHASES: tuple[str, ...] = ("discovery", "deep_analysis", "enterprise_context", "questionnaire")
+
+class Phase(str, Enum):
+    """Pipeline phases. ``(str, Enum)`` so members serialize as plain strings
+    and compare equal to the literals used across artifacts on disk."""
+
+    DISCOVERY = "discovery"
+    DEEP_ANALYSIS = "deep_analysis"
+    ENTERPRISE_CONTEXT = "enterprise_context"
+    QUESTIONNAIRE = "questionnaire"
+
+
+class QuestionStatus(str, Enum):
+    """Ledger question lifecycle. ``deferred`` = lost the review-gate slot
+    competition; terminal, default assumption applies."""
+
+    OPEN = "open"
+    ANSWERED = "answered"
+    DECLINED = "declined"
+    DEFERRED = "deferred"
+
+
+class Importance(str, Enum):
+    """Agent-declared question importance; one ranker input among several."""
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+# Derived so existing consumers (memory sections, spec discovery, validation)
+# keep receiving plain strings in the established order.
+PHASES: tuple[str, ...] = tuple(p.value for p in Phase)
 REPOS: tuple[str, ...] = ("oms-monolith", "oms-batch-recon")
 
 
@@ -148,7 +180,8 @@ class ArtifactStore:
     # -- ledger ---------------------------------------------------------
 
     def raise_question(self, phase: str, unit: str | None, question: str,
-                       context: str, default_assumption: str) -> str:
+                       context: str, default_assumption: str, *,
+                       importance: str, impact: str) -> str:
         """Append an ``open`` question to the ledger and return its id.
 
         Args:
@@ -158,6 +191,10 @@ class ArtifactStore:
             context: The evidence that motivated it.
             default_assumption: What the pipeline proceeds with until (and
                 unless) a human answers.
+            importance: One of the :class:`Importance` values - the raising
+                agent's own estimate; validated at the tool layer.
+            impact: How the human's answer would change the migration
+                decision - the justification for the claimed importance.
 
         Returns:
             The assigned id, ``"q-<n>"``, numbered by ledger position.
@@ -183,8 +220,16 @@ class ArtifactStore:
                 "unit": unit,
                 "question": question,
                 "context": context,
+                "impact": impact,
+                # ponytail: no str() coercion - Importance is (str, Enum), and
+                # Python 3.11+ Enum.__str__ prints "Importance.HIGH", not the
+                # value. json.dumps encodes any str subclass by its raw buffer
+                # (bypassing __str__), so storing verbatim is what actually
+                # yields a plain "high" on disk for both plain-str and
+                # Importance-member callers.
+                "importance": importance,
                 "default_assumption": default_assumption,
-                "status": "open",
+                "status": QuestionStatus.OPEN.value,
                 "human_answer": None,
                 "asked_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -204,7 +249,38 @@ class ArtifactStore:
             >>> [q["id"] for q in store.open_questions()]  # doctest: +SKIP
             ['q-2', 'q-3']
         """
-        return [e for e in self.read_ledger() if e["status"] == "open"]
+        return [e for e in self.read_ledger() if e["status"] == QuestionStatus.OPEN]
+
+    def unresolved_questions(self) -> list[dict]:
+        """Return entries still lacking an outcome: ``open`` or ``deferred``.
+
+        Exists for prompt-level duplicate suppression - a deferred question
+        must stay visible to agents or a revision re-raises it as new.
+        :meth:`open_questions` keeps its stricter meaning (presented and
+        unresolved), which the gate, pause seeding, and answer guard rely on.
+        """
+        wanted = (QuestionStatus.OPEN, QuestionStatus.DEFERRED)
+        return [e for e in self.read_ledger() if e["status"] in wanted]
+
+    def defer_questions(self, ids: list[str]) -> None:
+        """Mark the slot-competition losers ``deferred`` - one atomic rewrite.
+
+        Args:
+            ids: Ledger ids to defer.
+
+        Raises:
+            KeyError: Any unknown id - raised BEFORE writing, so a bad call
+                cannot half-apply.
+        """
+        with self._lock:
+            entries = self._read_ledger_unlocked()
+            by_id = {e["id"]: e for e in entries}
+            missing = [i for i in ids if i not in by_id]
+            if missing:
+                raise KeyError(missing[0])
+            for i in ids:
+                by_id[i]["status"] = QuestionStatus.DEFERRED.value
+            _atomic_write(self._ledger_path, "".join(json.dumps(e) + "\n" for e in entries))
 
     def resolve_question(self, question_id: str, status: str, human_answer: str | None) -> dict:
         """Mark one question ``answered`` or ``declined``.

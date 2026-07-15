@@ -13,7 +13,7 @@ from pathlib import Path
 
 from agent_framework import tool
 
-from .artifacts import ArtifactStore
+from .artifacts import ArtifactStore, Importance
 
 # Repo root (src/hotl_demo/tools.py -> two parents up): the spec mandates a
 # stable, CWD-independent steering-file path.
@@ -80,17 +80,30 @@ def make_tools(store: ArtifactStore, phase: str, unit: str | None = None,
         return "The scratchpad is empty. No operator guidance provided."
 
     @tool(approval_mode="never_require")
-    def raise_question(question: str, context: str, default_assumption: str) -> str:
+    def raise_question(question: str, context: str, default_assumption: str,
+                       importance: str, impact: str) -> str:
         """Raise a question that requires human clarification or adjudication.
         Use when evidence conflicts or a decision-critical fact is missing.
-        Provide the question, the evidence context, and the default assumption
-        you will proceed with until a human answers. Returns the question id."""
+        Provide: the question; the evidence context; the default assumption
+        you will proceed with until a human answers; importance - exactly one
+        of "high" (answer materially changes migration approach, scope, or
+        cost), "medium" (affects one workstream or sequencing), or "low"
+        (clarification that changes no decision); and impact - one or two
+        sentences on how the human's answer would change the migration
+        decision. Returns the question id."""
         # Validation failures return ERROR strings (never raise): the framework
         # feeds them back so the model can correct its call.
         if not question.strip() or not default_assumption.strip():
             return "ERROR: question and default_assumption must both be non-empty. Retry with both."
+        if not impact.strip():
+            return "ERROR: impact must explain how the human's answer would change the migration decision."
+        try:
+            level = Importance(importance.strip().lower())
+        except ValueError:
+            return "ERROR: importance must be exactly one of: high, medium, low."
         qid = store.raise_question(
-            phase, unit, question.strip(), context.strip(), default_assumption.strip()
+            phase, unit, question.strip(), context.strip(), default_assumption.strip(),
+            importance=level.value, impact=impact.strip(),
         )
         return f"Recorded {qid}. Proceed using your stated default assumption."
 

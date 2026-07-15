@@ -66,6 +66,14 @@ scheme-less.
   analyzers additionally get `list_files`/`read_file` bound to their repo
   (traversal-guarded). Tools return `"ERROR: ..."` strings, never raise -
   the framework feeds errors back to the model.
+- **Live steering** (`steering.py`): the scratchpad is pulled once via
+  `read_scratchpad`, and pushed thereafter. `ScratchpadWatch` (one per agent -
+  analyzers run concurrently) is polled by function middleware after every
+  tool call; a change is handed to the framework's
+  `MessageInjectionMiddleware`, which drains it into the agent's next model
+  call. An LLM turn cannot be interrupted, so a tool call is the earliest
+  possible delivery point - which is why there is no file watcher. A cleared
+  scratchpad advances the watermark but notifies nobody.
 
 ## Rules and gotchas
 
@@ -73,10 +81,12 @@ scheme-less.
   `@response_handler` validates `ctx` via `inspect.signature`, and string
   annotations break it (see the note at the top of that file).
 - Model-output hygiene lives in `phases.py`: `_clean_text` strips leaked
-  `<|...|>` template tokens; `_invoke_report` retries once on empty text
-  (the agent session persists across `run()` calls, so the retry sees the
-  exploration); the memory nudge is concatenated, never `str.format`-ed -
-  reports contain literal braces.
+  `<|...|>` template tokens; `_invoke_report` retries once on empty text.
+  The retry only sees the earlier exploration because `_run_initial` /
+  `on_revision` mint one `AgentSession` per cycle and `_invoke` passes it to
+  every `run()` - `Agent.run(session=None)` is stateless per call, so this
+  MUST stay explicit. The memory nudge is concatenated, never
+  `str.format`-ed - reports contain literal braces.
 - Never create `tests/__init__.py`: pytest imports tests as top-level
   modules and `from conftest import ...` depends on it.
 - Tests are LLM-free by default (`addopts = "-m 'not ollama'"`).

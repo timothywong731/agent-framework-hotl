@@ -6,9 +6,13 @@ a multi-phase agent pipeline that assesses a fictional legacy system's cloud
 migration readiness, accumulates a **ledger of questions** needing human
 adjudication, pauses **exactly once** at a review gate, selectively re-runs
 affected phases with the human's answers, and accepts freeform steering via a
-**scratchpad** file read by agents through a tool call.
+**scratchpad** file - read at phase start, and pushed to agents mid-run when
+the human edits it while the pipeline is working.
 
-Design spec: `docs/superpowers/specs/2026-07-14-hotl-pipeline-design.md`
+Design specs:
+`docs/superpowers/specs/2026-07-14-hotl-pipeline-design.md` (pipeline) and
+`docs/superpowers/specs/2026-07-15-live-scratchpad-steering-design.md`
+(live steering)
 
 ## The pipeline
 
@@ -89,6 +93,7 @@ flowchart TB
         T4[list_files / read_file]
     end
     SP[(scratchpad.md<br>human steering)] --> T1
+    SP -. "mid-run edit:<br>pushed at next tool call" .-> AGENT
     T2 --> L[(ledger.jsonl<br>append-only questions)]
     T3 --> M[(memory.json<br>shared long-term memory)]
     T4 --> REPOS[(sample_data/repos)]
@@ -143,8 +148,18 @@ Be terse; bullet points only.
 ```
 
 Every phase agent calls the `read_scratchpad` tool before working and follows
-what it finds. This is the basic steering channel into an otherwise closed
-pipeline.
+what it finds. Edits made *while* the pipeline runs are not missed either:
+they are pushed to whichever agents are still working, arriving at that
+agent's next tool call, and each agent decides whether the guidance is
+relevant to its phase. Watch for:
+
+```text
+  [steering] scratchpad update queued for analyze:oms-monolith
+```
+
+An LLM turn cannot be interrupted, so a tool call is the earliest possible
+delivery point - which is why there is no file watcher. Phases that already
+finished are not re-run; that is the review gate's job.
 
 ## Editing the prompts
 

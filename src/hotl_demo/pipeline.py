@@ -20,7 +20,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from agent_framework import Executor, WorkflowBuilder, WorkflowContext, handler
+from agent_framework import CheckpointStorage, Executor, WorkflowBuilder, WorkflowCheckpoint, WorkflowContext, handler
 
 from .artifacts import REPOS, ArtifactStore
 from .phases import (
@@ -33,8 +33,45 @@ from .phases import (
     build_phase_specs,
 )
 from .report import FinalReportExecutor
-from .review import ReviewExecutor
+from .review import LedgerQuestionRequest, ReviewExecutor
 from .tools import SCRATCHPAD_PATH
+
+WORKFLOW_NAME = "hotl-migration-readiness"
+
+# Every type that crosses the graph or sits in a pending request. Checkpoints
+# are PICKLED behind this allowlist; a type missing here does not raise on
+# load - list_checkpoints logs, skips the file, and returns [], which is
+# indistinguishable from "no checkpoints exist". Derived from the classes so
+# the module:qualname strings can never drift; test_checkpoint.py asserts
+# completeness against every dataclass in phases.py/review.py.
+_MESSAGE_TYPES = (PhaseDone, AnalysisDone, RevisionDone, RevisionTrigger,
+                  ReportTrigger, LedgerQuestionRequest)
+ALLOWED_CHECKPOINT_TYPES = [f"{t.__module__}:{t.__qualname__}" for t in _MESSAGE_TYPES]
+
+
+def gate_checkpoint(checkpoints: list[WorkflowCheckpoint]) -> WorkflowCheckpoint | None:
+    """Select the review-gate pause point from a run's checkpoints.
+
+    The gate checkpoint is BY DEFINITION the one idle with pending
+    ``request_info`` events; among those, the latest superstep wins.
+    Never select positionally: ``list_checkpoints`` globs UUID filenames,
+    so its order is meaningless - resuming from an arbitrary "latest" was
+    measured to skip the human entirely (the file-backed review_completed
+    latch told the re-entered gate "already reviewed").
+
+    Args:
+        checkpoints: Whatever ``storage.list_checkpoints`` returned.
+
+    Returns:
+        The gate checkpoint, or ``None`` when the run never paused (or every
+        checkpoint file failed to decode - see ALLOWED_CHECKPOINT_TYPES).
+
+    Example:
+        >>> gate_checkpoint([]) is None
+        True
+    """
+    pending = [c for c in checkpoints if c.pending_request_info_events]
+    return max(pending, key=lambda c: c.iteration_count) if pending else None
 
 
 def is_type(message_type: type) -> Callable[[Any], bool]:
@@ -112,13 +149,17 @@ class JoinAnalyses(Executor):
 
 
 def build_workflow(store: ArtifactStore, base_dir: Path,
-                   scratchpad_path: Path = SCRATCHPAD_PATH):
+                   scratchpad_path: Path = SCRATCHPAD_PATH,
+                   checkpoint_storage: CheckpointStorage | None = None):
     """Assemble the full HOTL workflow graph.
 
     Args:
         store: The run's shared artifact store, injected into every executor.
         base_dir: Sample-data root passed to :func:`build_phase_specs`.
         scratchpad_path: Steering file handed to every phase agent's tools.
+        checkpoint_storage: When provided, the framework checkpoints every
+            superstep into it (the --pause/--resume flows). ``None`` - the
+            default and the interactive path - changes nothing.
 
     Returns:
         The built (not yet running) agent-framework workflow. Drive it with
@@ -139,7 +180,8 @@ def build_workflow(store: ArtifactStore, base_dir: Path,
     review = ReviewExecutor(store, revision_order=[(s.name, s.unit) for s in specs])
     report = FinalReportExecutor(store)
 
-    builder = WorkflowBuilder(start_executor=discovery)
+    builder = WorkflowBuilder(name=WORKFLOW_NAME, start_executor=discovery,
+                              checkpoint_storage=checkpoint_storage)
     # initial forward flow
     for analyzer in analyzers:
         builder.add_edge(discovery, analyzer, condition=is_type(PhaseDone))

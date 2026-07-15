@@ -1,7 +1,7 @@
 # Bounded Ledger — Design
 
 **Date:** 2026-07-15
-**Status:** Approved
+**Status:** Approved (rev 2, 2026-07-16 — semantic LLM ranking at the gate replaces raise-order tie-breaks; importance/status/phase become typed enums)
 **Extends:** `2026-07-14-hotl-pipeline-design.md` (§5 ledger schema, §6 tools, §8 review gate) and `2026-07-15-review-gate-checkpointing-design.md` (§3.1 guard, §5 already-resumed refusal — amended by §5 below). Those specs stay authoritative for everything else.
 
 ## 1. Purpose
@@ -15,28 +15,26 @@ Competition happens **at the gate** (decided in the checkpointing brainstorm): t
 
 ## 2. The competition model
 
-### Selection is a pure function
+### Ranking is semantic; raise order carries zero signal
+
+The most profound questions — the ones whose answers would swing the final report's verdict hardest — must win the slots. That is a judgment over the *content* of `question`, `impact`, and `context` (with the agent-declared `importance` as one input among them, not a hard tier), so ranking is performed by **one LLM call at the gate**. Raise order and `asked_at` are explicitly **not** ranking inputs: when a question was asked says nothing about whether it matters, and the ranker's prompt states that ids carry no ordering signal.
+
+The ranker is a tool-less `Agent` owned by `ReviewExecutor` (test seam `ranker=` like every other executor's `agent=`), prompted via a new `prompts/rank_questions.md` template (prompts-are-data convention; the lint gate covers it). It receives every open question's `id`, `question`, `impact`, `context`, `importance`, and `default_assumption` — never `asked_at` — and must return the ids ordered by expected swing on the final report, biggest first, one id per line.
+
+**The ranker cannot kill the run.** Its output is validated by a pure function (`validate_ranking(candidate_ids, text) -> list[str] | None`: every candidate exactly once, nothing else); an invalid response gets one corrective retry; if that also fails, the gate falls back to a deterministic degraded order — importance tier, then id — and says so on stdout. The fallback exists only for ranker failure; the normal path is fully semantic.
+
+**Ranking only happens when there is real competition.** `len(open) <= max_questions` presents everything with no LLM call; `max_questions == 0` defers everything with no LLM call.
+
+### Splitting stays pure
 
 ```python
-_IMPORTANCE_RANK = {"high": 0, "medium": 1, "low": 2}
-
-def select_for_review(open_questions: list[dict],
-                      max_questions: int) -> tuple[list[dict], list[dict]]:
-    """Split the open ledger into (presented, deferred), most influential first.
-
-    Sort key is (importance tier, ledger position): high before medium before
-    low, raise order breaking ties. Deterministic - no LLM judge; the raising
-    agent already encoded its judgment in ``importance``.
-    """
-    ranked = sorted(enumerate(open_questions),
-                    key=lambda iq: (_IMPORTANCE_RANK[iq[1]["importance"]], iq[0]))
-    chosen = {i for i, _ in ranked[:max_questions]}
-    presented = [q for i, q in enumerate(open_questions) if i in chosen]
-    deferred = [q for i, q in enumerate(open_questions) if i not in chosen]
-    return presented, deferred
+def split_ranked(ranked_ids: list[str], open_questions: list[dict],
+                 max_questions: int) -> tuple[list[dict], list[dict]]:
+    """(presented, deferred) - winners are the first max_questions ranked ids;
+    both output lists are returned in LEDGER order for stable display."""
 ```
 
-(Illustrative; the implementation may simplify, but the observable contract — tier order, raise-order tie-break, both outputs in ledger order — is fixed.)
+(Illustrative; the observable contract — winners by ranked prefix, outputs in ledger order — is fixed.)
 
 ### Deferral is terminal
 
@@ -48,13 +46,40 @@ The gate runs exactly once, so losing the competition is permanent for the run: 
 
 ## 3. Schema changes
 
+### Typed enums, not string literals
+
+`artifacts.py` gains three `str`-based enums — the exact form pydantic enum fields consume (pydantic is already in the dependency tree via `agent-framework`), while keeping JSONL on disk and every existing `==` comparison working unchanged. `enum.StrEnum` is 3.11+; the project floor is 3.10, hence `(str, Enum)`:
+
+```python
+class Phase(str, Enum):
+    DISCOVERY = "discovery"
+    DEEP_ANALYSIS = "deep_analysis"
+    ENTERPRISE_CONTEXT = "enterprise_context"
+    QUESTIONNAIRE = "questionnaire"
+
+class QuestionStatus(str, Enum):
+    OPEN = "open"
+    ANSWERED = "answered"
+    DECLINED = "declined"
+    DEFERRED = "deferred"
+
+class Importance(str, Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+PHASES: tuple[str, ...] = tuple(p.value for p in Phase)   # existing consumers unchanged
+```
+
+Values are stored in the JSONL as plain strings (`.value`), so the frontend and every existing artifact reader are unaffected. Code replaces bare literals (`"open"`, `"answered"`, …) with enum members; validation at the tool layer becomes enum membership (`Importance(value)` raising `ValueError` → the ERROR-retry path).
+
 ### The tool
 
 ```python
 raise_question(question, context, default_assumption, importance, impact)
 ```
 
-- `importance` must be exactly one of `high` / `medium` / `low`; anything else (including omission) returns an ERROR string the framework feeds back for a retry — the existing validation pattern. No silent default: a lazy `medium`-everywhere would quietly degrade ranking to raise order.
+- `importance` must be exactly one of `high` / `medium` / `low` (the `Importance` enum values); anything else (including omission) returns an ERROR string the framework feeds back for a retry — the existing validation pattern. No silent default: a lazy `medium`-everywhere would blind one of the ranker's input signals and hollow out the degraded fallback entirely.
 - `impact` must be non-empty: one or two sentences on how the human's answer would change the migration decision. It is the justification for the claimed importance, and it is what the human reads when deciding whether to engage.
 - `context` keeps its existing meaning: the evidence that motivated the question.
 
@@ -95,7 +120,7 @@ The frontend reads `importance`/`impact` from `ledger.jsonl` exactly as it reads
 
 `ReviewExecutor(store, revision_order, max_questions=3)`; `build_workflow` threads it through; `main.py` supplies `--max-questions`.
 
-`on_questionnaire_done` becomes: latch → read open questions → `select_for_review(open_qs, max_questions)` → `defer_questions([...])` for the losers → emit `request_info` per winner. Ordering matters: deferral is written **before** the workflow idles, so a `--pause` checkpoint and its seeded `review.jsonl` already reflect the competition.
+`on_questionnaire_done` becomes: latch → read open questions → if competition is real, run the ranker (`rank_questions.md` prompt → `validate_ranking` → retry once → degraded fallback) → `split_ranked(...)` → `defer_questions([...])` for the losers → emit `request_info` per winner. Ordering matters: deferral is written **before** the workflow idles, so a `--pause` checkpoint and its seeded `review.jsonl` already reflect the competition.
 
 Banner when deferral occurs:
 
@@ -121,9 +146,10 @@ Banner when deferral occurs:
 
 | File | Change |
 |---|---|
-| `artifacts.py` | `raise_question` gains `importance`/`impact` (validated at the tool layer, stored here); `defer_questions`; `unresolved_questions` |
-| `tools.py` | `raise_question` tool: two new params, enum + non-empty validation, docstring teaching the criteria |
-| `review.py` | `select_for_review`; `ReviewExecutor(max_questions=3)`; gate flow marks deferrals before prompting; banner; `LedgerQuestionRequest` + `importance`/`impact` |
+| `artifacts.py` | `Phase`/`QuestionStatus`/`Importance` enums (`PHASES` derived); `raise_question` gains `importance`/`impact`; `defer_questions`; `unresolved_questions`; literals → enum members |
+| `tools.py` | `raise_question` tool: two new params, enum-membership + non-empty validation, docstring teaching the criteria |
+| `review.py` | Ranker `Agent` (tool-less, `ranker=` test seam) + `validate_ranking` + `split_ranked` + degraded fallback; `ReviewExecutor(max_questions=3)`; gate marks deferrals before prompting; banner; `LedgerQuestionRequest` + `importance`/`impact` |
+| `prompts/rank_questions.md` | New ranking prompt template: candidates rendered without `asked_at`; instructs that ids/raise order carry no signal; output one id per line, biggest expected report-swing first |
 | `main.py` | `--max-questions` (default 3, non-negative); `already_resumed` tightened; display lines in `_prompt_human`/`_write_pause_files` |
 | `pipeline.py` | `build_workflow(..., max_questions=3)` threaded to the gate |
 | `report.py` | `render_adjudication_log`: explicit `deferred` branch |
@@ -134,26 +160,30 @@ Banner when deferral occurs:
 ## 7. Error handling
 
 - Invalid/missing `importance` or empty `impact` → ERROR string, model retries (never raises; existing tool contract).
+- Ranker output invalid (missing/duplicate/foreign ids) → one corrective retry carrying the validation complaint; still invalid → deterministic degraded fallback (importance tier, then id), announced on stdout. The gate never crashes on a bad ranking.
 - `defer_questions` with an unknown id → `KeyError` (programming error, loud).
 - `--max-questions` negative → `parser.error` before any work.
 - Old paused runs do **not** survive this upgrade: a pre-Spec-B checkpoint pickles `LedgerQuestionRequest` instances without the new fields, and display code would `AttributeError` on restore. Start a fresh run; one sentence in the README says so. (Demo-scale honesty beats a migration shim.)
 
 ## 8. Testing (LLM-free)
 
-- `select_for_review`: tier ordering; raise-order tie-break inside a tier; fewer open than slots (all presented, none deferred); `max_questions=0` (all deferred); output lists preserve ledger order.
+- `validate_ranking`: accepts a permutation of the candidates (whitespace/blank-line tolerant); rejects missing, duplicate, and foreign ids → `None`.
+- `split_ranked`: winners are the ranked prefix; both outputs in ledger order; fewer open than slots (all presented, none deferred); `max_questions=0` (all deferred).
+- Gate ranking flow (scripted ranker via the `ranker=` seam, `FakeAgent` pattern): valid ranking → winners presented; first response invalid → retry consulted; both invalid → degraded fallback order used and announced; no ranker call when `len(open) <= slots` or `slots == 0`.
+- Enums: JSONL round-trips plain strings; `Importance("mid")` raises → tool returns the ERROR string naming allowed values.
 - `defer_questions`: statuses flip atomically; unknown id raises; `human_answer` untouched.
 - Tool validation: bad importance → ERROR string naming the allowed values; empty impact → ERROR; valid call records both fields.
 - `already_resumed`: deferred-only ledger → `False` (the regression this spec exists to prevent); answered or declined → `True`.
 - `render_adjudication_log`: deferred branch wording; deferred vs post-gate-open are distinct rows.
 - Duplicate suppression: `build_revision_prompt` includes a deferred question's id in the suppression list.
-- **Integration tests embrace the default**: the pipeline drive and pause/resume cycle tests keep raising 5 questions and now assert 3 presented + 2 deferred (by tier/raise-order), deferred entries in the final adjudication log, and — in the cycle test — `review.jsonl` seeded with exactly the 3 presented ids. The regression suite itself demonstrates the feature.
-- Live E2E: unchanged in structure; the scripted loop answers whatever the gate presents.
+- **Integration tests embrace the default**: the pipeline drive and pause/resume cycle tests keep raising 5 questions; the review ranker is scripted (same monkeypatch pattern as `phases.Agent`/`report.Agent` — `DriveAgent` learns to answer the ranking prompt with a fixed order). Assert: exactly the scripted top-3 are presented, 2 deferred, deferred rows in the adjudication log, and — in the cycle test — `review.jsonl` seeded with exactly the 3 presented ids. The regression suite itself demonstrates the feature.
+- Live E2E: unchanged in structure; the scripted loop answers whatever the gate presents (now the ranker's real top 3).
 
 ## 9. Non-goals
 
 - **No eviction at raise time.** Settled in the checkpointing brainstorm: the ledger stays append-only; bounding is presentation-side.
 - **No re-ranking after revisions.** The gate runs once; questions raised during re-runs never compete and are listed as open-with-default, exactly as today.
-- **No LLM-judged importance.** Deterministic ranking from the agent-declared flag; a judge call would add cost and non-determinism for a demo-invisible gain.
+- **No determinism guarantee for ranking.** Semantic ranking is an LLM judgment and may vary run to run; the deterministic order exists only as the degraded fallback. Accepted deliberately (rev 2): profundity is semantic, and raise order must carry no signal.
 - **No cross-run memory of deferrals.** Each run competes fresh.
 
 ## 10. Decisions log
@@ -162,8 +192,11 @@ Banner when deferral occurs:
 |---|---|---|
 | Competition site | At the gate (rank + defer) | Eviction at raise time (user-decided against in the checkpointing brainstorm: order-dependent, breaks append-only) |
 | Default slots | 3 (`--max-questions`) | 5 (feature invisible in a typical 5-question demo run); unlimited-unless-flagged (invisible by default) |
-| Ranking | `(importance tier, raise order)`, pure function | LLM judge at the gate (nondeterministic, extra call); recency-weighted (later ≠ more influential) |
-| `importance` handling | Required, enum-validated, ERROR retry | Optional default `medium` (lazy models flatten ranking to raise order, silently) |
+| Ranking | Semantic LLM ranker at the gate: expected swing on the final report, over `question`/`impact`/`context` with `importance` as one input; raise order and `asked_at` excluded | rev 1's `(importance tier, raise order)` pure function — rejected by user feedback: profundity is semantic and raise order must carry zero signal; recency-weighted (later ≠ more influential) |
+| Ranker robustness | `validate_ranking` → one corrective retry → deterministic degraded fallback (tier, then id), announced | Trusting raw output (a flaky local model kills the gate); no fallback (run dies on a formatting error) |
+| Ranking scope | Only when `len(open) > slots > 0` | Always rank (wasted LLM call when nothing competes) |
+| Field typing | `(str, Enum)` for `Phase`/`QuestionStatus`/`Importance`, plain-string values on disk | Bare literals (rev 1 — user feedback); `enum.StrEnum` (3.11+, floor is 3.10); full pydantic `BaseModel` entries (a far larger refactor than the ask, for a dict-based store) |
+| `importance` handling | Required, enum-validated, ERROR retry | Optional default `medium` (lazy models flatten the signal, silently) |
 | Impact capture | Separate structured `impact` field | Enriched `context` prose (frontend would re-parse prose; agents blur evidence with consequence) |
 | Deferral mechanics | Ledger status `deferred`, marked pre-pause in one atomic rewrite | Presentation-only filtering with no status (report cannot distinguish deferred from open; resume seeding would leak deferred ids into `review.jsonl`) |
 | `--max-questions 0` | Allowed: fully autonomous defaults-only run | Rejecting it (forecloses the closed-pipeline degenerate case for free) |

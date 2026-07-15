@@ -46,10 +46,96 @@ flowchart LR
   assumption applies)
 - **final_report** - readiness scorecard + recommendation + adjudication log
 
-## How the review gate works
+## The HOTL model
+
+"Human-**on**-the-loop" rather than "in-the-loop": the pipeline runs to
+completion on its own and **never blocks waiting for a human**. When an agent
+hits a gap or a contradiction it records the question, states the assumption
+it will proceed on, and carries on. The human supervises rather than
+authorises.
+
+There are exactly two channels from human to pipeline, and they are
+deliberately different shapes:
+
+| | Channel 1: question ledger | Channel 2: scratchpad |
+|---|---|---|
+| Shape | Structured questions with defaults | Freeform markdown |
+| Who initiates | The **agent** (`raise_question`) | The **human** |
+| When | Once, after `questionnaire` | Any time - before or during a run |
+| How often | **Exactly once per run** | Unlimited |
+| Blocks the run? | Yes - the workflow idles at the gate | No - never blocks |
+| Effect of input | Answer re-runs the raising phase | Advisory; the agent judges relevance |
+| Reaches finished phases? | Yes, via targeted re-run | No - only agents still working |
+
+The asymmetry is the point. Interrupting a human is expensive, so the
+structured channel is rationed to one batch. Steering is cheap, so the
+freeform channel is unlimited.
+
+## Channel 1: the question ledger
+
+### Raising a question never blocks
+
+Phase prompts instruct agents: when evidence conflicts or a decision-critical
+fact is missing, call `raise_question` with the assumption you will proceed
+on, then **proceed on it**. The tool returns the assigned id and says so
+explicitly:
+
+```text
+Recorded q-1. Proceed using your stated default assumption.
+```
+
+That default is what makes the pipeline closed by construction. A run with
+zero human input still produces a complete report - just one built on stated
+assumptions rather than adjudicated facts.
+
+### The ledger entry
+
+`ledger.jsonl` is append-only, one JSON object per line:
+
+```json
+{
+  "id": "q-3",
+  "phase": "deep_analysis",
+  "unit": "oms-batch-recon",
+  "question": "Remediate the hardcoded DB credentials before or during migration?",
+  "context": "config.py holds a plaintext password; the security standard forbids credentials in code.",
+  "default_assumption": "Move to a vault and rotate before migration",
+  "status": "open",
+  "human_answer": null,
+  "asked_at": "2026-07-15T20:41:07"
+}
+```
+
+`phase` and `unit` are **not supplied by the model**. The tools are
+closure-bound to the calling `(phase, unit)` in `tools.py`, so an agent cannot
+forge attribution or write into another repo's section. `unit` is the repo
+name for `deep_analysis` questions and `null` everywhere else - that pair is
+exactly what the gate later re-runs.
+
+### Accumulation and duplicate suppression
+
+The ledger grows across phases, and every phase's prompt is rendered with the
+**current open ledger** plus an instruction not to re-raise anything already
+there. Duplicate suppression is therefore prompt-level, not structural - no
+curation machinery, no dedupe pass. The trade is that suppression is only as
+reliable as the model.
+
+### Lifecycle of a question
+
+```mermaid
+flowchart LR
+    A["agent hits a gap<br>or a contradiction"] -->|"raise_question"| O(["status: open"])
+    O -->|"human types an answer"| AN(["status: answered"])
+    O -->|"human presses ENTER"| DE(["status: declined"])
+    O -->|"raised during a re-run<br>(never prompted)"| OP["final report:<br>open - default applied"]
+    AN --> RR["raising phase RE-RUNS<br>answer is AUTHORITATIVE"]
+    DE --> DF["no re-run<br>default assumption stands"]
+```
+
+## The review gate
 
 The pause/resume is the framework's native `request_info` mechanism - the
-workflow idles while the human decides:
+workflow genuinely idles while the human decides:
 
 ```mermaid
 sequenceDiagram
@@ -75,12 +161,97 @@ sequenceDiagram
     W-->>CLI: final_report.md path
 ```
 
-Declined questions cost nothing: the stated default assumption stands and is
-documented. Questions raised *during* re-runs are never prompted (the gate
-runs once); the final report lists them as "open - default assumption
-applied".
+The rules the gate enforces:
 
-## Artifacts and steering
+1. **It runs exactly once.** Entering the gate latches `review_completed` in
+   `memory.json`. This is the whole point of the demo: an agent pipeline that
+   asks for help *once*, in one batch, instead of nagging.
+2. **Answer = authoritative.** Typed text is injected into the re-run prompt
+   marked `AUTHORITATIVE`, overriding any conflicting document or code
+   evidence.
+3. **Decline = the default stands.** Empty input (or a closed stdin) costs
+   nothing and triggers no re-run. The stated assumption was already applied,
+   so the report is already consistent with it.
+4. **Only answered phases re-run**, and only the exact `(phase, unit)` that
+   raised the question - answering a `oms-batch-recon` question re-runs that
+   one analyzer, not its sibling. Re-runs are sequential, in pipeline order.
+5. **Questions raised during a re-run are never prompted.** They append to the
+   ledger and the final report lists them as *open - default assumption
+   applied*. Otherwise "review once" would be a lie.
+
+### A deliberate simplification
+
+Re-runs do **not** cascade downstream: an answered `discovery` question
+re-runs `discovery` alone. Downstream phases change only if they raised
+answered questions themselves. The verdict still absorbs every answer, because
+`final_report` synthesises from post-adjudication `memory.json`. Marked in the
+code with a `ponytail:` comment; the upgrade path is to cascade from the
+earliest affected phase.
+
+### The adjudication log is not written by the LLM
+
+`final_report.md` ends with a table rendered deterministically from
+`ledger.jsonl` by plain code - answered questions with the human's verbatim
+answer, declined and still-open ones with the default that was applied. The
+narrative above it is the model's; the decision record is not, so it cannot be
+hallucinated.
+
+## Channel 2: the scratchpad
+
+`scratchpad.md` (repo root, stable path, starts empty) is the freeform
+channel. Write guidance into it at any time - before a run, or while one is
+executing:
+
+```markdown
+The nightly reconciliation job is business-critical - treat it as a
+first-class migration workload, not a peripheral batch process.
+
+Data residency: assume EU (Ireland). Do not raise further questions on it.
+```
+
+It reaches agents two ways:
+
+- **Pulled**, once per phase: every phase agent calls the `read_scratchpad`
+  tool before starting work.
+- **Pushed**, thereafter: if you edit the file *while* a phase is running, the
+  change is delivered to every agent still working, arriving at that agent's
+  next tool call. Each agent decides for itself whether the guidance is
+  relevant to its phase.
+
+Watch for the push in the run output:
+
+```text
+  [steering] scratchpad update queued for analyze:oms-monolith
+```
+
+### How the push works
+
+`ScratchpadWatch` (one per agent - the analyzers run concurrently, so a shared
+watermark would let one steal the other's notification) is polled by function
+middleware after every tool call. A content change - not an mtime change, so
+re-saving an unedited file is silent - is handed to the framework's
+`MessageInjectionMiddleware`, which drains it into that agent's next model
+call.
+
+An LLM turn cannot be interrupted, so a tool call is the earliest possible
+delivery point. That is why there is no file watcher: delivery would wait for
+the same boundary anyway, so a watcher thread would buy nothing.
+
+One useful property comes free: if an agent was about to finish and emit its
+report, `MessageInjectionMiddleware` forces one extra model call rather than
+letting the notice miss the boat.
+
+### Limits worth knowing
+
+- **It does not re-run finished phases.** An edit during `final_report`
+  changes nothing upstream - that is the review gate's job.
+- **The agent may reasonably ignore it.** The notice explicitly says to ignore
+  irrelevant guidance, and it will. Steering that is on-topic for the phase
+  lands; arbitrary instructions may not.
+- **Clearing the scratchpad notifies nobody.** Withdrawing guidance is not new
+  guidance to act on.
+
+## Artifacts
 
 ```mermaid
 flowchart TB
@@ -102,9 +273,14 @@ flowchart TB
     R --> FR
 ```
 
-Artifacts land in `output/run_<timestamp>/`: one markdown report per phase,
-`memory.json`, `ledger.jsonl`, and `final_report.md` (whose adjudication log
-is rendered deterministically from the ledger, never by the LLM).
+Everything lands in `output/run_<timestamp>/`: one markdown report per phase
+(overwritten on revision), `memory.json`, `ledger.jsonl`, and
+`final_report.md`. `scratchpad.md` deliberately lives at the repo root
+instead: it is an input the human owns, not a run artifact.
+
+Every mutation goes through `ArtifactStore` (one lock, atomic temp-file +
+`os.replace`), because the two analyzers write concurrently and a human may
+have the files open mid-run.
 
 ## Prerequisites
 
@@ -137,29 +313,8 @@ writing a markdown report, updating `memory.json`, and appending questions to
 Type an answer to make it authoritative (the raising phase re-runs with it),
 or press ENTER to decline (the stated default stands).
 
-## Steering via the scratchpad
-
-`scratchpad.md` (repo root) starts empty. Write guidance into it at any
-time - before a run or while one is executing:
-
-```markdown
-Focus on data-layer risks. Assume the migration window is Q3.
-Be terse; bullet points only.
-```
-
-Every phase agent calls the `read_scratchpad` tool before working and follows
-what it finds. Edits made *while* the pipeline runs are not missed either:
-they are pushed to whichever agents are still working, arriving at that
-agent's next tool call, and each agent decides whether the guidance is
-relevant to its phase. Watch for:
-
-```text
-  [steering] scratchpad update queued for analyze:oms-monolith
-```
-
-An LLM turn cannot be interrupted, so a tool call is the earliest possible
-delivery point - which is why there is no file watcher. Phases that already
-finished are not re-run; that is the review gate's job.
+To see the scratchpad channel too, edit `scratchpad.md` while the analyzers
+are still working and watch for the `[steering]` line.
 
 ## Editing the prompts
 

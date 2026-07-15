@@ -109,6 +109,29 @@ async def test_no_open_questions_goes_straight_to_report(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fresh_executor_acts_only_on_last_answer(store):
+    # Resume scenario: after a checkpoint restore the gate is a NEW instance
+    # that never saw on_questionnaire_done. The old in-memory _awaiting counter
+    # started at 0 there, so EVERY answer looked like the last -> overlapping
+    # revision queues, discovery revised 5x, final_report written 5x (measured).
+    # The guard must be ledger-derived: dispatch only when nothing is open.
+    review = ReviewExecutor(store, ORDER)              # fresh: no gate entry
+    ctx = FakeCtx()
+    reqs = [
+        LedgerQuestionRequest(q["id"], q["phase"], q["unit"], q["question"],
+                              q["context"], q["default_assumption"])
+        for q in store.open_questions()
+    ]
+    for r in reqs[:-1]:
+        await review.on_answer(r, f"answer to {r.question_id}", ctx)
+        assert ctx.sent == []                          # verdicts still outstanding
+    await review.on_answer(reqs[-1], "final answer", ctx)
+    assert len(ctx.sent) == 1                          # exactly one dispatch
+    assert isinstance(ctx.sent[0], RevisionTrigger)
+    assert (ctx.sent[0].phase, ctx.sent[0].unit) == ("discovery", None)
+
+
+@pytest.mark.asyncio
 async def test_review_once_guard(store):
     ctx = FakeCtx()
     review = ReviewExecutor(store, ORDER)

@@ -91,8 +91,10 @@ class ReviewExecutor(Executor):
     1. ``on_questionnaire_done`` - latch ``review_completed`` (the
        review-once rule), then emit one ``request_info`` per open question;
        the workflow run goes idle until the CLI resumes it with responses.
-    2. ``on_answer`` (once per question) - record the verdict; when the last
-       one lands, build the ordered re-run queue and dispatch its head.
+    2. ``on_answer`` (once per question) - record the verdict; when the ledger
+       has no open questions left (all verdicts in - a FILE-backed check, so a
+       checkpoint-resumed gate, which is a fresh instance, behaves the same),
+       build the ordered re-run queue and dispatch its head.
     3. ``on_revision_done`` - dispatch the next queued re-run, or
        ``ReportTrigger`` when the queue is empty.
 
@@ -105,6 +107,10 @@ class ReviewExecutor(Executor):
                  revision_order: list[tuple[str, str | None]]) -> None:
         """Remember the store and the canonical re-run ordering.
 
+        Deliberately no adjudication counters here: gate progress must be
+        derived from the ledger so that a checkpoint resume (fresh instance)
+        cannot diverge from a live run. See the checkpointing spec.
+
         Args:
             store: The run's shared artifact store.
             revision_order: Every ``(phase, unit)`` in pipeline order,
@@ -113,7 +119,6 @@ class ReviewExecutor(Executor):
         super().__init__(id="review")
         self._store = store
         self._revision_order = revision_order
-        self._awaiting = 0
         self._queue: list[RevisionTrigger] = []
 
     @handler
@@ -138,7 +143,6 @@ class ReviewExecutor(Executor):
             await ctx.send_message(ReportTrigger())
             return
         print(f"\n== REVIEW - {len(open_qs)} open questions ==")
-        self._awaiting = len(open_qs)
         for q in open_qs:
             # One request_info per question: the workflow idles after this
             # handler returns, until the runner calls run(responses={...}).
@@ -169,9 +173,9 @@ class ReviewExecutor(Executor):
         self._store.resolve_question(
             original.question_id, "answered" if text else "declined", text or None
         )
-        self._awaiting -= 1
-        if self._awaiting > 0:
-            return  # more verdicts still inbound; act only on the last one
+        if self._store.open_questions():
+            return  # verdicts still outstanding - ledger-derived, so a resumed
+            # run (fresh executor instance) behaves identically to this one
         ledger = self._store.read_ledger()
         targets = affected_targets(ledger, self._revision_order)
         self._queue = [

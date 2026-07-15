@@ -313,6 +313,28 @@ writing a markdown report, updating `memory.json`, and appending questions to
 Type an answer to make it authoritative (the raising phase re-runs with it),
 or press ENTER to decline (the stated default stands).
 
+### Pausing for days: `--pause` / `--resume`
+
+Gathering real answers can take days, and holding a live process open for
+that is the wrong shape. With `--pause` the run checkpoints at the gate and
+exits:
+
+```bash
+poetry run demo --pause
+# == PAUSED at the review gate - 5 open questions ==
+# Fill in the answers in output/run_<ts>/review.jsonl
+# Then: poetry run demo --resume output/run_<ts>
+```
+
+`review.jsonl` carries only the human's input - one `{"id", "answer"}` line
+per question, seeded empty. The question text stays in `ledger.jsonl`
+(agent-curated, read-only); a frontend joins the two on `id`. Leave an answer
+empty to decline. Resuming restores the exact gate state and re-runs **zero**
+phases - only the answered phases revise, then the report lands. Resume with
+the same `--model` the run was paused with; a run that raises no questions
+never pauses. A malformed answer line aborts loudly rather than silently
+becoming a decline.
+
 To see the scratchpad channel too, edit `scratchpad.md` while the analyzers
 are still working and watch for the `[steering]` line.
 

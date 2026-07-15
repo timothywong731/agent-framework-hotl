@@ -18,6 +18,8 @@ for behavioral semantics; the plan next to it is historical.
 ```bash
 poetry install
 poetry run demo                                # needs local Ollama + gemma4:31b
+poetry run demo --pause                        # checkpoint + exit at the review gate
+poetry run demo --resume output/run_<ts>       # apply review.jsonl answers, finish the run
 poetry run pytest                              # fast, LLM-free; includes the markdown lint gate
 poetry run pytest tests/test_review.py -v      # one file
 poetry run pytest tests/test_review.py::test_review_once_guard -v   # one test
@@ -49,6 +51,11 @@ scheme-less.
   ANSWERED questions re-run - sequentially, in pipeline order. Questions
   raised during re-runs are never prompted; the final report lists them as
   open.
+  With `--pause` the gate checkpoints and exits (answers land in
+  `review.jsonl` - id + answer only); `--resume` restores via
+  `gate_checkpoint()`, which selects the checkpoint holding pending
+  request_info events - `list_checkpoints` is glob-ordered, never trust
+  "latest".
 - **File-backed state** (`artifacts.py`): `memory.json` (the `deep_analysis`
   section nests per repo), append-only `ledger.jsonl`, markdown reports - all
   under `output/run_<timestamp>/`. Every mutation goes through
@@ -102,3 +109,13 @@ scheme-less.
   are historical and excluded.
 - CLI stays stdlib (`argparse`/`print`); the dependency set is deliberately
   minimal.
+- Review-gate progress must stay LEDGER-derived. The framework only persists
+  executor state registered via `ctx.set_executor_state` (we use none), so a
+  resumed gate is a fresh instance: an in-memory counter made every answer
+  look like the last (discovery revised 5x). `test_checkpoint.py`'s cycle
+  test guards this.
+- Checkpoints are pickled behind `ALLOWED_CHECKPOINT_TYPES` (pipeline.py). A
+  type missing from it does NOT raise - `list_checkpoints` returns `[]`, so
+  resume silently "finds no checkpoints". The allowlist is derived from the
+  message classes and completeness-tested; keep new message dataclasses in
+  `_MESSAGE_TYPES`.

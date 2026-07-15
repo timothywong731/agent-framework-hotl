@@ -99,8 +99,9 @@ _NOTICE_TAIL = (
 def make_steering_middleware(watch: ScratchpadWatch,
                              injector: MessageInjectionMiddleware,
                              label: str):
+    @function_middleware                             # REQUIRED - see below
     async def steering_middleware(
-        context: FunctionInvocationContext,          # annotation: framework dispatches on it
+        context: FunctionInvocationContext,
         call_next: Callable[[], Awaitable[None]],
     ) -> None:
         await call_next()
@@ -113,7 +114,9 @@ def make_steering_middleware(watch: ScratchpadWatch,
     return steering_middleware
 ```
 
-The framework selects middleware kind by the `context` parameter's type annotation; the exported `@function_middleware` decorator is available as a more explicit alternative if the closure form proves awkward.
+**`@function_middleware` is load-bearing, not decoration.** The framework's `_determine_middleware_type` classifies a plain callable by `inspect.signature(...)` and then `first_param.annotation.__name__`. Under `from __future__ import annotations` — which the rest of this package uses — that annotation is the *string* `"FunctionInvocationContext"`, and `str` has no `__name__`, so classification falls through to `MiddlewareException: Cannot determine middleware type`. This is the same trap CLAUDE.md already documents for `review.py`'s `@response_handler`.
+
+The decorator sets a `_middleware_type` marker that is checked first and is immune to string annotations (verified empirically with the future import active). Keeping both the decorator and the annotation means they agree — satisfying the framework's mismatch check — and lets `steering.py` use the package's normal future import rather than becoming a second "never add this import" landmine.
 
 The notice deliberately delegates the relevance judgement to the model — matching the request that the agent "take that into account **if relevant**".
 
@@ -136,9 +139,24 @@ The notice deliberately delegates the relevance judgement to the model — match
 | `phases.py` | `PhaseExecutor.__init__`: build a `ScratchpadWatch` + one `MessageInjectionMiddleware`, pass `middleware=[injector, steering_mw]` to `Agent(...)`; create an explicit session via `agent.create_session()` |
 | `phases.py` | `_invoke`: pass `session=self._session` to `self._agent.run(...)` |
 
-The explicit session is the only structural change to existing behaviour, and it is a clarification rather than a shift: today's cross-`run()` session persistence — which the memory nudge and the report retry already rely on (see CLAUDE.md) — is currently implicit. Making it explicit is required anyway to have a handle to enqueue into.
-
 `middleware` is passed at agent construction, so the `agent=` test seam in `PhaseExecutor.__init__` is untouched.
+
+### The explicit session is a bug fix, not a clarification
+
+An earlier revision of this spec claimed the explicit session merely made today's implicit session persistence explicit. **That was wrong**, and verifying it against the installed package changed the design. The facts:
+
+- `Agent.__init__` stores no session, and `Agent.run` only forwards its `session` parameter — there is no instance-level session.
+- `_prepare_session_and_messages` does `provider_session = session; if provider_session is None and self.context_providers: provider_session = AgentSession()`.
+- `Agent(client=..., name=..., instructions=..., tools=...)` yields `context_providers == []`.
+
+With no session passed and no context providers, `session_id` is `None` and **every `run()` call is an independent, stateless turn**. So both CLAUDE.md and the `PhaseExecutor` docstring are false where they claim *"the agent session persists across `run()` calls… the follow-up turn sees the whole earlier exploration"*. Consequences today:
+
+- **The memory nudge works anyway** — but by accident, not by session: `_NUDGE_PREFIX + text` embeds the report directly in the prompt, so the model needs no history.
+- **The report retry is latently broken.** `_REPORT_RETRY` says *"You explored the sources but did not produce the phase report"* to a model that has no memory of exploring anything. It re-explores from scratch at best.
+
+Adding an explicit session therefore **repairs** the retry path and makes the docstring true. This is a deliberate, in-scope behaviour change — the enqueue handle requires a session regardless, and shipping the handle while leaving the documentation false would be worse.
+
+**Session lifetime: one per run cycle, not one per executor.** `_run_initial` and `on_revision` each mint a fresh session via `agent.create_session()`. Within a cycle, the nudge and retry see the exploration (the fix). Across cycles, the revision prompt stays self-contained — it already carries `previous_report` and the human answers by design — and history cannot grow unboundedly across a re-run.
 
 ## 6. Non-goals and known limitations
 
@@ -170,5 +188,8 @@ The explicit session is the only structural change to existing behaviour, and it
 | Watermark scope | Per-agent (`ScratchpadWatch` per `PhaseExecutor`) | Global/shared — wrong: concurrent analyzers would steal each other's notifications |
 | Payload | Full current scratchpad text | Delta via `difflib` (bookkeeping for no gain on a small file) |
 | Module | New `steering.py` | Add to `tools.py` (breaks its "tools only" contract) |
-| Session | Explicit `agent.create_session()`, passed to every `run()` | Implicit (today's behaviour) — no handle to enqueue into |
+| Middleware kind detection | `@function_middleware` decorator **plus** the annotation | Annotation alone — verified to raise `MiddlewareException` under `from __future__ import annotations`; dropping the future import instead would make `steering.py` a second `review.py`-style landmine |
+| Session | Explicit `agent.create_session()`, passed to every `run()` | Implicit (today's behaviour) — no handle to enqueue into, and verified stateless per call, which silently breaks `_REPORT_RETRY` |
+| Session lifetime | One per run cycle (`_run_initial` / `on_revision`) | One per executor (revision would inherit the whole initial exploration, inflating history and undercutting the self-contained revision prompt); one per `run()` (no persistence — the status quo bug) |
+| CLAUDE.md + `PhaseExecutor` docstring | Corrected as part of this change | Leave them asserting session persistence that does not exist |
 | Relevance filtering | The model decides, per the notice wording | Code-side heuristics matching scratchpad text to phases (guesswork, and contrary to the ask) |

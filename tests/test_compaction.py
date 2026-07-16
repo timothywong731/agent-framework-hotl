@@ -184,3 +184,21 @@ def test_compaction_runs_once_per_model_call_in_tool_loop():
     # THE design-carrying assertion: one compaction pass per model call,
     # i.e. compaction also fires between tool iterations.
     assert strategy.calls == 2
+
+
+# -- wiring: the real PhaseExecutor agent carries the strategy + window ---
+
+from pathlib import Path
+
+from hotl_demo.artifacts import REPOS, ArtifactStore
+from hotl_demo.phases import PhaseExecutor, build_phase_specs
+
+
+def test_phase_executor_wires_compaction_and_num_ctx(monkeypatch, tmp_path):
+    monkeypatch.setenv("OLLAMA_MODEL", "test-model")   # ctor reads env; no server contact
+    monkeypatch.setenv("OLLAMA_NUM_CTX", "8192")
+    spec = build_phase_specs(Path("sample_data"))[0]
+    store = ArtifactStore(tmp_path / "run", REPOS)
+    ex = PhaseExecutor(spec, store, scratchpad_path=tmp_path / "scratchpad.md")
+    assert ex._agent.compaction_strategy is not None
+    assert ex._agent.default_options.get("num_ctx") == 8192

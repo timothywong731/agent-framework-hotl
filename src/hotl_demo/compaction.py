@@ -58,6 +58,27 @@ def token_budget(num_ctx: int) -> int:
     return int(_BUDGET_FRACTION * (num_ctx - _OUTPUT_RESERVE))
 
 
+class _NumCtxSummarizer:
+    """Ollama-backed summarizer that pins ``num_ctx`` per call.
+
+    ``SummarizationStrategy`` calls ``get_response(messages, stream=False)``
+    with no options, and ``OllamaChatClient``'s ctor takes no default options
+    (1.11.0) - so without this shim the summarization request itself would be
+    truncated at the server's own default window.
+    """
+
+    def __init__(self, num_ctx: int) -> None:
+        self._client: Any = None  # lazy: only summarization that FIRES needs Ollama
+        self._num_ctx = num_ctx
+
+    async def get_response(self, messages: Any, stream: bool = False, **kwargs: Any) -> Any:
+        if self._client is None:
+            from agent_framework.ollama import OllamaChatClient
+            self._client = OllamaChatClient()  # model comes from OLLAMA_MODEL env var
+        return await self._client.get_response(
+            messages, stream=stream, options={"num_ctx": self._num_ctx}, **kwargs)
+
+
 class _LoggedStrategy:
     """CompactionStrategy-protocol wrapper: delegate; one line when it acted.
 
@@ -90,17 +111,16 @@ def build_compaction_strategy(label: str, num_ctx: int, summarizer: Any = None):
         label: Executor id used in the console line.
         num_ctx: Model window in tokens; drives the budget.
         summarizer: Test seam - anything with ``async get_response(messages,
-            stream=False)`` returning ``.text``. Defaults to a dedicated
-            ``OllamaChatClient`` carrying ``num_ctx`` so the summarization
-            call is not itself truncated.
+            stream=False)`` returning ``.text``. Defaults to
+        :class:`_NumCtxSummarizer` so the summarization call is not itself
+            truncated.
 
     Returns:
         An async ``(messages) -> bool`` satisfying the framework's
         ``CompactionStrategy`` protocol.
     """
     if summarizer is None:
-        from agent_framework.ollama import OllamaChatClient
-        summarizer = OllamaChatClient(default_options={"num_ctx": num_ctx})
+        summarizer = _NumCtxSummarizer(num_ctx)
     tokenizer = CharacterEstimatorTokenizer()
     composed = TokenBudgetComposedStrategy(
         token_budget=token_budget(num_ctx),

@@ -34,7 +34,7 @@ This spec adds a bounded context with two goals, per the brainstorm:
 | Does that cover the tool loop? | The function-invocation layer issues each tool-loop iteration through `get_response`, so compaction applies per iteration. **Confirm with a spike** (count strategy invocations across a multi-tool fake run) |
 | Does compaction delete messages? | **No.** Messages are annotated into atomic groups (system / user / assistant_text / tool_call) and marked `_excluded`; only the included projection is sent. A tool call is never split from its results |
 | What happens if the summarizer fails? | `SummarizationStrategy` logs a warning and reports "no change"; `TokenBudgetComposedStrategy`'s deterministic fallback then excludes oldest groups until under budget. Compaction cannot crash a run |
-| Can we make Ollama honor our budget? | Yes — `num_ctx` is a typed `OllamaChatOptions` key, and both `Agent` and `OllamaChatClient` accept `default_options` |
+| Can we make Ollama honor our budget? | Yes — `num_ctx` is a typed `OllamaChatOptions` key and `Agent` accepts `default_options`. (Correction found during implementation: `OllamaChatClient.__init__` does NOT — the summarizer pins `num_ctx` via a per-call `get_response(options=...)` shim instead) |
 
 ## 3. Design
 
@@ -84,7 +84,9 @@ with two stages, in order:
    Exclusion is safe here: durable findings live in `memory.json` and the report draft,
    and a file can always be re-read.)
 2. **LLM summarization second, only if still over budget:**
-   `SummarizationStrategy(client=OllamaChatClient(default_options={"num_ctx": num_ctx}))`
+   `SummarizationStrategy(client=_NumCtxSummarizer(num_ctx))` — a lazy shim over
+   `OllamaChatClient` that injects `options={"num_ctx": ...}` per call (the client
+   ctor takes no default options in 1.11.0)
    — same model via `OLLAMA_MODEL`, framework-default prompt, but explicit
    `target_count=2, threshold=0`: the framework default trigger (more than ~6
    non-system messages) is count-based and never fires for this repo's profile — a few

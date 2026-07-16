@@ -14,6 +14,7 @@ from agent_framework.ollama import OllamaChatClient
 from typing_extensions import Never
 
 from .artifacts import ArtifactStore, QuestionStatus
+from .compaction import resolve_num_ctx
 from .phases import PROMPT_ENV, ReportTrigger
 
 
@@ -122,6 +123,9 @@ class FinalReportExecutor(Executor):
             client=OllamaChatClient(),
             name="final_report",
             instructions="You write crisp executive assessment reports.",
+            # Single-turn agent: no history to compact, but the server must
+            # honor the same window the phase agents budget for.
+            default_options={"num_ctx": resolve_num_ctx()},
         )
 
     @handler

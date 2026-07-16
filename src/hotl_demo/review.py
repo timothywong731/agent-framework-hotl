@@ -17,6 +17,7 @@ from agent_framework import Agent, Executor, WorkflowContext, handler, response_
 from agent_framework.ollama import OllamaChatClient
 
 from .artifacts import ArtifactStore, Importance
+from .compaction import resolve_num_ctx
 from .phases import PROMPT_ENV, PhaseDone, ReportTrigger, RevisionDone, RevisionTrigger
 
 
@@ -211,6 +212,9 @@ class ReviewExecutor(Executor):
             name="review_ranker",
             instructions="You rank open review questions by how much their "
                          "answers would change the final migration readiness report.",
+            # Single-turn agent: no history to compact, but the server must
+            # honor the same window the phase agents budget for.
+            default_options={"num_ctx": resolve_num_ctx()},
         )
         self._queue: list[RevisionTrigger] = []
 

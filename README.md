@@ -99,7 +99,7 @@ assumptions rather than adjudicated facts.
   "unit": "oms-batch-recon",
   "question": "Remediate the hardcoded DB credentials before or during migration?",
   "context": "config.py holds a plaintext password; the security standard forbids credentials in code.",
-  "impact": "If the producer is also migrating, the feed moves to object storage in one step; if not, an NFS bridge must be budgeted.",
+  "impact": "If remediation must precede migration it adds a pre-cutover security workstream; if it can happen during, it folds into the cutover runbook.",
   "importance": "medium",
   "default_assumption": "Move to a vault and rotate before migration",
   "status": "open | answered | declined | deferred",

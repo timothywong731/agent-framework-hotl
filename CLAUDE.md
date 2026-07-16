@@ -20,6 +20,7 @@ poetry install
 poetry run demo                                # needs local Ollama + gemma4:31b
 poetry run demo --pause                        # checkpoint + exit at the review gate
 poetry run demo --resume output/run_<ts>       # apply review.jsonl answers, finish the run
+poetry run demo --max-questions 5              # review-gate slot budget (0 = never pause)
 poetry run pytest                              # fast, LLM-free; includes the markdown lint gate
 poetry run pytest tests/test_review.py -v      # one file
 poetry run pytest tests/test_review.py::test_review_once_guard -v   # one test
@@ -53,6 +54,12 @@ window and the compaction budget.
   ANSWERED questions re-run - sequentially, in pipeline order. Questions
   raised during re-runs are never prompted; the final report lists them as
   open.
+  Open questions COMPETE for `--max-questions` slots (default 3): a tool-less
+  ranker agent orders them by expected swing on the final report (raise order
+  carries no signal); losers are marked `deferred` - terminal, default
+  applied - BEFORE the pause, so checkpoints and `review.jsonl` reflect the
+  competition. Ranker output is fenced: `validate_ranking` -> one retry ->
+  deterministic `(importance, id)` fallback.
   With `--pause` the gate checkpoints and exits (answers land in
   `review.jsonl` - id + answer only); `--resume` restores via
   `gate_checkpoint()`, which selects the checkpoint holding pending
@@ -128,3 +135,8 @@ window and the compaction budget.
   resume silently "finds no checkpoints". The allowlist is derived from the
   message classes and completeness-tested; keep new message dataclasses in
   `_MESSAGE_TYPES`.
+- `deferred` is not a verdict: `already_resumed` must only count
+  answered/declined, because the gate writes deferrals BEFORE any resume
+  exists. `Importance`/`QuestionStatus`/`Phase` are `(str, Enum)` in
+  `artifacts.py` - plain strings on disk; compare with enum members, and
+  keep `enum.StrEnum` out (3.11+, floor is 3.10).

@@ -99,8 +99,10 @@ assumptions rather than adjudicated facts.
   "unit": "oms-batch-recon",
   "question": "Remediate the hardcoded DB credentials before or during migration?",
   "context": "config.py holds a plaintext password; the security standard forbids credentials in code.",
+  "impact": "If remediation must precede migration it adds a pre-cutover security workstream; if it can happen during, it folds into the cutover runbook.",
+  "importance": "medium",
   "default_assumption": "Move to a vault and rotate before migration",
-  "status": "open",
+  "status": "open | answered | declined | deferred",
   "human_answer": null,
   "asked_at": "2026-07-15T20:41:07"
 }
@@ -111,6 +113,10 @@ closure-bound to the calling `(phase, unit)` in `tools.py`, so an agent cannot
 forge attribution or write into another repo's section. `unit` is the repo
 name for `deep_analysis` questions and `null` everywhere else - that pair is
 exactly what the gate later re-runs.
+
+`importance` (high / medium / low) and `impact` - how the human's answer
+would change the migration decision - are agent-declared, tool-validated,
+and exist for the slot competition below.
 
 ### Accumulation and duplicate suppression
 
@@ -128,6 +134,7 @@ flowchart LR
     O -->|"human types an answer"| AN(["status: answered"])
     O -->|"human presses ENTER"| DE(["status: declined"])
     O -->|"raised during a re-run<br>(never prompted)"| OP["final report:<br>open - default applied"]
+    O -->|"loses the slot competition"| DEF["status: deferred<br>default applied, terminal"]
     AN --> RR["raising phase RE-RUNS<br>answer is AUTHORITATIVE"]
     DE --> DF["no re-run<br>default assumption stands"]
 ```
@@ -166,16 +173,24 @@ The rules the gate enforces:
 1. **It runs exactly once.** Entering the gate latches `review_completed` in
    `memory.json`. This is the whole point of the demo: an agent pipeline that
    asks for help *once*, in one batch, instead of nagging.
-2. **Answer = authoritative.** Typed text is injected into the re-run prompt
+2. **Slots are scarce - questions compete.** The gate presents at most
+   `--max-questions` (default 3). When more are open, one LLM ranking call
+   orders them by expected swing on the final report - judging each
+   question's substance and impact statement, with the declared importance
+   as one input; raise order carries no signal. Losers are marked
+   `deferred`: their defaults stand and the adjudication log says so. The
+   ranker is fenced (validated output, one retry, deterministic fallback),
+   and `--max-questions 0` defers everything - the fully autonomous run.
+3. **Answer = authoritative.** Typed text is injected into the re-run prompt
    marked `AUTHORITATIVE`, overriding any conflicting document or code
    evidence.
-3. **Decline = the default stands.** Empty input (or a closed stdin) costs
+4. **Decline = the default stands.** Empty input (or a closed stdin) costs
    nothing and triggers no re-run. The stated assumption was already applied,
    so the report is already consistent with it.
-4. **Only answered phases re-run**, and only the exact `(phase, unit)` that
+5. **Only answered phases re-run**, and only the exact `(phase, unit)` that
    raised the question - answering a `oms-batch-recon` question re-runs that
    one analyzer, not its sibling. Re-runs are sequential, in pipeline order.
-5. **Questions raised during a re-run are never prompted.** They append to the
+6. **Questions raised during a re-run are never prompted.** They append to the
    ledger and the final report lists them as *open - default assumption
    applied*. Otherwise "review once" would be a lie.
 
@@ -333,6 +348,11 @@ writing a markdown report, updating `memory.json`, and appending questions to
 
 Type an answer to make it authoritative (the raising phase re-runs with it),
 or press ENTER to decline (the stated default stands).
+
+Pass `--max-questions N` to change the slot budget (default 3; `0` never
+pauses and runs entirely on defaults). Paused runs created before this
+feature cannot be resumed - the checkpointed question schema changed - so
+start those assessments fresh.
 
 ### Pausing for days: `--pause` / `--resume`
 

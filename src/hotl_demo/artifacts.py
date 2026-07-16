@@ -64,7 +64,8 @@ class ArtifactStore:
     Example:
         >>> store = ArtifactStore(Path("output/run_x"))
         >>> qid = store.raise_question("discovery", None, "In scope?",
-        ...                            "docs omit recon", "in scope")
+        ...                            "docs omit recon", "in scope",
+        ...                            importance="medium", impact="sets the scope")
         >>> store.resolve_question(qid, "answered", "yes")["status"]
         'answered'
     """
@@ -222,7 +223,7 @@ class ArtifactStore:
                 "context": context,
                 "impact": impact,
                 # ponytail: no str() coercion - Importance is (str, Enum), and
-                # Python 3.11+ Enum.__str__ prints "Importance.HIGH", not the
+                # for (str, Enum) mixins str() renders "Importance.HIGH", not the
                 # value. json.dumps encodes any str subclass by its raw buffer
                 # (bypassing __str__), so storing verbatim is what actually
                 # yields a plain "high" on disk for both plain-str and

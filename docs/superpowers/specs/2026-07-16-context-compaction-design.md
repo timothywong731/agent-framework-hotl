@@ -67,19 +67,31 @@ Agent(
 its own default regardless of what we budget for. The phase agents' `OllamaChatClient`
 stays no-arg.
 
+The ranker (`review.py`) and final-report (`report.py`) agents additionally get
+`default_options={"num_ctx": resolve_num_ctx()}` — no compaction strategy
+(single-turn, no history to compact), but the server must honor the same
+window or their large prompts are truncated at Ollama's own default.
+
 ### 3.3 The hybrid pipeline
 
 `TokenBudgetComposedStrategy(token_budget, tokenizer=CharacterEstimatorTokenizer(), early_stop=True)`
 with two stages, in order:
 
-1. **Deterministic first:** `ToolResultCompactionStrategy(keep_last_tool_call_groups=2)`
-   — collapses older tool-call groups into one-line `[Tool results: ...]` messages.
-   Targets exactly what grows here: analyzer `read_file` output.
+1. **Deterministic first:** `SelectiveToolCallCompactionStrategy(keep_last_tool_call_groups=2)`
+   — excludes older tool-call groups entirely, keeping the newest 2 verbatim. (The spec
+   originally named `ToolResultCompactionStrategy`, but its one-line summary embeds the
+   full result text — for 20k-char `read_file` results it reclaims almost nothing.
+   Exclusion is safe here: durable findings live in `memory.json` and the report draft,
+   and a file can always be re-read.)
 2. **LLM summarization second, only if still over budget:**
    `SummarizationStrategy(client=OllamaChatClient(default_options={"num_ctx": num_ctx}))`
-   — same model via `OLLAMA_MODEL`, framework-default prompt and counts. Its own client
-   carries `num_ctx` so the summarization call is not itself truncated. One summarizer
-   client per executor (it is a stateless HTTP wrapper; nothing is shared).
+   — same model via `OLLAMA_MODEL`, framework-default prompt, but explicit
+   `target_count=2, threshold=0`: the framework default trigger (more than ~6
+   non-system messages) is count-based and never fires for this repo's profile — a few
+   huge `read_file` messages; these counts make stage 2 engage whenever the composed
+   budget check invokes it. Its own client carries `num_ctx` so the summarization call
+   is not itself truncated. One summarizer client per executor (it is a stateless HTTP
+   wrapper; nothing is shared).
 3. **Fallback (built into the composed strategy):** oldest-first group exclusion until
    under budget. The budget is therefore a hard guarantee.
 
@@ -115,7 +127,7 @@ Silent when under budget. Message/token counts come from the framework's
 
 - **Report retry / memory nudge** currently "see the whole earlier exploration"
   (`phases.py` docstrings). After this change they see the *compacted* exploration —
-  old tool results as one-liners, plus a summary if stage 2 fired. Intended trade;
+  old tool-call groups evicted, plus a summary if stage 2 fired. Intended trade;
   update the docstrings and the CLAUDE.md note to match.
 - **Steering injections** are ordinary user-group messages: recent when injected, so
   they survive; an old one can eventually be summarized away. Acceptable — the model
@@ -130,7 +142,7 @@ Silent when under budget. Message/token counts come from the framework's
 New `tests/test_compaction.py`, driving the composed strategy directly with synthetic
 message lists and a `FakeSummaryClient` (canned `get_response`, records calls):
 
-1. Over-budget tool-heavy history → old tool groups collapsed, newest 2 verbatim,
+1. Over-budget tool-heavy history → old tool groups excluded, newest 2 verbatim,
    included tokens ≤ budget.
 2. Stage 2 fires only when stage 1 is insufficient (assert via the fake's call log).
 3. Summarizer raises / returns empty → still ≤ budget, no exception.

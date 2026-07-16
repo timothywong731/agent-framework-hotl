@@ -26,6 +26,7 @@ from jinja2 import Environment, FileSystemLoader
 from pypdf import PdfReader
 
 from .artifacts import PHASES, REPOS, ArtifactStore
+from .compaction import build_compaction_strategy, resolve_num_ctx
 from .steering import ScratchpadWatch, make_steering_middleware
 from .tools import SCRATCHPAD_PATH, make_repo_tools, make_tools
 
@@ -464,7 +465,8 @@ class PhaseExecutor(Executor):
 
     Each run cycle mints ONE ``AgentSession`` shared by every turn in it, which
     is what makes the bounded memory nudge and report retry effective - the
-    follow-up turn sees the whole earlier exploration. This must be explicit:
+    follow-up turn sees the earlier exploration (compacted when over budget -
+    see :mod:`hotl_demo.compaction`). This must be explicit:
     ``Agent.run(session=None)`` is stateless per call. Revisions mint a fresh
     session, since the revision prompt is self-contained by design.
 
@@ -501,12 +503,18 @@ class PhaseExecutor(Executor):
         steering_mw = make_steering_middleware(
             ScratchpadWatch(scratchpad_path), injector, spec.executor_id
         )
+        num_ctx = resolve_num_ctx()
         self._agent = agent or Agent(
             client=OllamaChatClient(),  # model comes from OLLAMA_MODEL env var
             name=spec.executor_id.replace(":", "_"),
             instructions="You are one phase of a multi-agent assessment pipeline.",
             tools=tools,
             middleware=[injector, steering_mw],
+            # Both halves matter: num_ctx makes Ollama honor the window we
+            # budget for; without it the server truncates oldest-first at its
+            # own default and compaction guards a window that does not exist.
+            default_options={"num_ctx": num_ctx},
+            compaction_strategy=build_compaction_strategy(spec.executor_id, num_ctx),
         )
         # Set per run cycle by _run_initial/on_revision; not shared across cycles.
         self._session = None
@@ -594,8 +602,8 @@ class PhaseExecutor(Executor):
         """Invoke expecting a report back; retry once if the model produced none.
 
         Tool-heavy runs sometimes end with empty/junk final text. The retry
-        sees the full exploration because both turns share this cycle's
-        session - which only works because ``_invoke`` passes it explicitly
+        shares this cycle's session, so it sees the (possibly compacted)
+        exploration - which only works because ``_invoke`` passes it explicitly
         (``Agent.run(session=None)`` is stateless per call).
 
         Args:

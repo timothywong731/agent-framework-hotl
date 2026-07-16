@@ -150,7 +150,8 @@ class JoinAnalyses(Executor):
 
 def build_workflow(store: ArtifactStore, base_dir: Path,
                    scratchpad_path: Path = SCRATCHPAD_PATH,
-                   checkpoint_storage: CheckpointStorage | None = None):
+                   checkpoint_storage: CheckpointStorage | None = None,
+                   max_questions: int = 3):
     """Assemble the full HOTL workflow graph.
 
     Args:
@@ -160,6 +161,8 @@ def build_workflow(store: ArtifactStore, base_dir: Path,
         checkpoint_storage: When provided, the framework checkpoints every
             superstep into it (the --pause/--resume flows). ``None`` - the
             default and the interactive path - changes nothing.
+        max_questions: Review-gate slot budget (``0`` = defer everything and
+            never pause); threaded to :class:`ReviewExecutor`.
 
     Returns:
         The built (not yet running) agent-framework workflow. Drive it with
@@ -177,7 +180,8 @@ def build_workflow(store: ArtifactStore, base_dir: Path,
     questionnaire = phase_execs["questionnaire"]
     join = JoinAnalyses(expected=len(analyzers))
     # revision_order preserves spec order so re-runs happen in pipeline order.
-    review = ReviewExecutor(store, revision_order=[(s.name, s.unit) for s in specs])
+    review = ReviewExecutor(store, revision_order=[(s.name, s.unit) for s in specs],
+                            max_questions=max_questions)
     report = FinalReportExecutor(store)
 
     builder = WorkflowBuilder(name=WORKFLOW_NAME, start_executor=discovery,

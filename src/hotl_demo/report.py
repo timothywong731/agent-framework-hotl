@@ -13,7 +13,7 @@ from agent_framework import Agent, Executor, WorkflowContext, handler
 from agent_framework.ollama import OllamaChatClient
 from typing_extensions import Never
 
-from .artifacts import ArtifactStore
+from .artifacts import ArtifactStore, QuestionStatus
 from .phases import PROMPT_ENV, ReportTrigger
 
 
@@ -39,7 +39,8 @@ def render_adjudication_log(ledger: list[dict]) -> str:
 
     Resolution wording per status: ``answered`` shows the human's verbatim
     answer; ``declined`` and ``open`` show the default assumption that was
-    applied instead.
+    applied instead. ``deferred`` shows the applied default explicitly
+    marked as a slot-limit outcome.
 
     Args:
         ledger: All ledger entries, in raise order.
@@ -63,10 +64,12 @@ def render_adjudication_log(ledger: list[dict]) -> str:
     ]
     for e in ledger:
         where = f"{e['phase']}[{e['unit']}]" if e["unit"] else e["phase"]
-        if e["status"] == "answered":
+        if e["status"] == QuestionStatus.ANSWERED:
             resolution = f"answered: {e['human_answer']}"
-        elif e["status"] == "declined":
+        elif e["status"] == QuestionStatus.DECLINED:
             resolution = f"declined - default applied: {e['default_assumption']}"
+        elif e["status"] == QuestionStatus.DEFERRED:
+            resolution = f"deferred (over slot limit) - default applied: {e['default_assumption']}"
         else:
             resolution = f"open - default assumption applied: {e['default_assumption']}"
         lines.append(f"| {e['id']} | {where} | {_cell(e['question'])} | {_cell(resolution)} |")

@@ -73,3 +73,14 @@ async def test_executor_writes_report_and_yields_path(tmp_path):
     assert "recon in scope" in text            # deterministic table present even though
     assert "q-3" in text                       # the fake agent never mentioned the ledger
     assert ctx.outputs == [str(store.run_dir / "final_report.md")]
+
+
+def test_adjudication_log_deferred_branch_is_distinct_from_open():
+    log = render_adjudication_log([
+        {"id": "q-1", "phase": "discovery", "unit": None, "question": "A?",
+         "status": "deferred", "human_answer": None, "default_assumption": "da"},
+        {"id": "q-2", "phase": "questionnaire", "unit": None, "question": "B?",
+         "status": "open", "human_answer": None, "default_assumption": "db"},
+    ])
+    assert "deferred (over slot limit) - default applied: da" in log
+    assert "open - default assumption applied: db" in log

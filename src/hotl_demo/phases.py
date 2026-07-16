@@ -545,7 +545,7 @@ class PhaseExecutor(Executor):
         self._session = self._agent.create_session()
         prompt = build_revision_prompt(
             self._spec, self._spec.load_sources(), self._store.memory_text(),
-            self._store.open_questions(), trig.answers,
+            self._store.unresolved_questions(), trig.answers,
             self._store.read_report(self._spec.report_filename),
         )
         text = await self._invoke_report(prompt)
@@ -567,9 +567,11 @@ class PhaseExecutor(Executor):
         """
         self._session = self._agent.create_session()
         before = self._store.memory_key_count(self._spec.name, self._spec.unit)
+        # unresolved = open + deferred: a deferred question must stay in the
+        # suppression list or a revising agent re-raises it as new.
         prompt = build_initial_prompt(
             self._spec, self._spec.load_sources(), self._store.memory_text(),
-            self._store.open_questions(),
+            self._store.unresolved_questions(),
         )
         text = await self._invoke_report(prompt)
         if self._store.memory_key_count(self._spec.name, self._spec.unit) == before:

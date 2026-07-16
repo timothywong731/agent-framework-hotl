@@ -155,3 +155,16 @@ async def test_revision_cycle_gets_a_fresh_session(store, tmp_path):
 
     assert len(agent.created_sessions) == 2
     assert agent.sessions[0] != agent.sessions[-1]  # revision ran in a new session
+
+
+@pytest.mark.asyncio
+async def test_prompts_suppress_deferred_questions_too(store, tmp_path):
+    # A deferred question is terminal but must stay visible to agents, or a
+    # revision re-raises it as new (and post-gate it would sit open forever).
+    qid = store.raise_question("discovery", None, "Deferred one?", "ctx", "d",
+                               importance="low", impact="none")
+    store.defer_questions([qid])
+    spec = _spec()
+    agent = FakeAgent(["# R"], side_effect=lambda p: store.update_memory("discovery", None, "k", "v"))
+    await _executor(store, tmp_path, spec, agent).on_start("start", FakeCtx())
+    assert qid in agent.prompts[0]           # suppression list includes deferred

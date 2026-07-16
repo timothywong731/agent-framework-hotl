@@ -88,13 +88,21 @@ def test_map_answers_missing_id_declines_and_unknown_ids_surface():
     assert unknown == ["q-99"]                    # warned by the caller, ignored
 
 
-def test_already_resumed_derives_from_ledger_not_the_sheet():
-    # A --pause run resolves NO questions before its resume (verdicts are
-    # applied only by a resume), so any non-open entry proves one already ran.
-    # Reviewers caught the old guard inferring this from the answer sheet: an
-    # EMPTIED review.jsonl on a first resume is a legitimate decline-everything,
-    # not a crashed resume - it must not be refused.
+def test_already_resumed_means_verdicts_not_just_non_open():
+    # A --pause run defers slot-competition losers BEFORE any resume exists,
+    # so deferred entries must not read as "a resume already ran". Only
+    # verdicts - answered/declined - prove that.
     assert already_resumed([]) is False
-    assert already_resumed([_q("q-1"), _q("q-2")]) is False          # all open
+    assert already_resumed([_q("q-1"), _q("q-2")]) is False                    # all open
+    assert already_resumed([{**_q("q-1"), "status": "deferred"}]) is False     # deferred != verdict
     assert already_resumed([_q("q-1"), {**_q("q-2"), "status": "answered"}]) is True
     assert already_resumed([{**_q("q-1"), "status": "declined"}]) is True
+
+
+def test_prompt_human_shows_importance_and_impact(monkeypatch, capsys):
+    monkeypatch.setattr("builtins.input", lambda _: "an answer")
+    q = LedgerQuestionRequest("q-1", "discovery", None, "Scope?", "ctx", "in scope",
+                              "high", "changes the 6R approach")
+    assert _prompt_human(q) == "an answer"
+    out = capsys.readouterr().out
+    assert "Importance: high" in out and "Impact if answered: changes the 6R approach" in out

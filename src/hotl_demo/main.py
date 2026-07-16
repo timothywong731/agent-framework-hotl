@@ -22,7 +22,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from .artifacts import REPOS, ArtifactStore
+from .artifacts import REPOS, ArtifactStore, QuestionStatus
 from .review import LedgerQuestionRequest
 from .tools import SCRATCHPAD_PATH, ensure_scratchpad
 
@@ -114,6 +114,8 @@ def _prompt_human(q: LedgerQuestionRequest) -> str:
     print(f"\n[{q.question_id}] ({where}) {q.question}")
     print(f"      Evidence: {q.context}")
     print(f"      Default if declined: {q.default_assumption}")
+    print(f"      Importance: {q.importance}")
+    print(f"      Impact if answered: {q.impact}")
     try:
         return input("      Your answer (ENTER to decline): ")
     except EOFError:  # non-interactive stdin: decline, keep the run alive
@@ -218,7 +220,10 @@ def already_resumed(ledger: list[dict]) -> bool:
         ledger: Full ledger, as returned by ``ArtifactStore.read_ledger``.
 
     Returns:
-        True when any entry has been answered or declined.
+        True when any entry carries a human verdict (answered or declined).
+        ``deferred`` entries are written by the GATE before any resume exists
+        - losing the slot competition is not a verdict and must not read as
+        "already resumed".
 
     Example:
         >>> already_resumed([{"status": "open"}])
@@ -226,7 +231,8 @@ def already_resumed(ledger: list[dict]) -> bool:
         >>> already_resumed([{"status": "declined"}])
         True
     """
-    return any(e["status"] != "open" for e in ledger)
+    verdicts = (QuestionStatus.ANSWERED, QuestionStatus.DECLINED)
+    return any(e["status"] in verdicts for e in ledger)
 
 
 async def _amain() -> None:
@@ -236,6 +242,10 @@ async def _amain() -> None:
                         help="Ollama model tag (default: %(default)s)")
     parser.add_argument("--data", type=Path, default=Path("sample_data"),
                         help="sample data directory")
+    parser.add_argument("--max-questions", type=int, default=3, metavar="N",
+                        help="review-gate slot budget: open questions compete and only "
+                             "the top N are presented, the rest proceed on their defaults "
+                             "(default: %(default)s; 0 = never pause, fully autonomous)")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--pause", action="store_true",
                       help="checkpoint and exit at the review gate instead of prompting; "
@@ -246,6 +256,8 @@ async def _amain() -> None:
                            "applying the answers in RUN_DIR/review.jsonl. "
                            "Pass the same --model the run was paused with.")
     args = parser.parse_args()
+    if args.max_questions < 0:
+        parser.error("--max-questions must be >= 0")
     os.environ["OLLAMA_MODEL"] = args.model  # OllamaChatClient reads this
     base_url = normalize_host(os.environ.get("OLLAMA_HOST", "http://localhost:11434"))
     preflight(base_url, args.model)
@@ -280,7 +292,8 @@ async def _amain() -> None:
                 "(mid-revision recovery is out of scope).")
         storage = FileCheckpointStorage(run_dir / CHECKPOINT_DIRNAME,
                                         allowed_checkpoint_types=ALLOWED_CHECKPOINT_TYPES)
-        workflow = build_workflow(store, args.data, checkpoint_storage=storage)
+        workflow = build_workflow(store, args.data, checkpoint_storage=storage,
+                                  max_questions=args.max_questions)
         gate = gate_checkpoint(await storage.list_checkpoints(workflow_name=WORKFLOW_NAME))
         if gate is None:
             raise SystemExit(
@@ -305,7 +318,8 @@ async def _amain() -> None:
                                         allowed_checkpoint_types=ALLOWED_CHECKPOINT_TYPES)
     # storage=None on the default path: the interactive flow is byte-for-byte
     # unchanged; checkpointing risk stays opt-in.
-    workflow = build_workflow(store, args.data, checkpoint_storage=storage)
+    workflow = build_workflow(store, args.data, checkpoint_storage=storage,
+                              max_questions=args.max_questions)
     await _drive(workflow, store, message="start", pause=args.pause)
 
 
@@ -376,6 +390,8 @@ def _write_pause_files(store: ArtifactStore, pending_count: int) -> None:
         print(f"\n[{q['id']}] ({where}) {q['question']}")
         print(f"      Evidence: {q['context']}")
         print(f"      Default if declined: {q['default_assumption']}")
+        print(f"      Importance: {q['importance']}")
+        print(f"      Impact if answered: {q['impact']}")
     print(f"\nFill in the answers in {review_path}")
     print('(one {"id", "answer"} JSON line per question; empty answer = decline; '
           f"question text lives in {store.run_dir / 'ledger.jsonl'})")

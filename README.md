@@ -251,6 +251,27 @@ letting the notice miss the boat.
 - **Clearing the scratchpad notifies nobody.** Withdrawing guidance is not new
   guidance to act on.
 
+## Bounded context (compaction)
+
+Local models have small windows (Ollama defaults to 4096 tokens) and, when a
+conversation exceeds one, Ollama silently drops the OLDEST tokens - the system
+prompt and task framing - producing off-task reports with no error anywhere.
+
+Every phase agent therefore runs a compaction pipeline on each model call,
+including between tool calls: old tool-call groups are evicted first
+(newest 2 kept verbatim), the remainder is LLM-summarized if still over
+budget, and a deterministic oldest-first fallback makes the budget a hard
+guarantee. The budget is `0.8 * (num_ctx - 1024)`. Watch for:
+
+```text
+deep_analysis:oms-monolith: compacted context 14 -> 6 messages (~3124 -> 1893 tokens)
+```
+
+Size the window with `--num-ctx` (or `OLLAMA_NUM_CTX`); the same value is sent
+to Ollama as `num_ctx`, so the server window and the compaction budget always
+agree. Durable findings survive compaction by design: they live in
+`memory.json` and the report drafts, not in chat history.
+
 ## Artifacts
 
 ```mermaid

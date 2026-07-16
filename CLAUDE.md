@@ -30,8 +30,10 @@ poetry run python scripts/make_pdfs.py         # regenerate PDFs after editing s
 
 PowerShell equivalent for the live E2E: `$env:OLLAMA_E2E="1"; poetry run pytest -m ollama -s`.
 The model comes from the `OLLAMA_MODEL` env var (or `demo --model`);
-`OllamaChatClient` is always constructed no-arg. `OLLAMA_HOST` may be
-scheme-less.
+`OllamaChatClient` is constructed no-arg everywhere (the compaction
+summarizer pins `num_ctx` per call, not via the ctor). `OLLAMA_HOST` may be
+scheme-less. `OLLAMA_NUM_CTX` (or `demo --num-ctx`) sizes both the Ollama
+window and the compaction budget.
 
 ## Architecture
 
@@ -81,6 +83,13 @@ scheme-less.
   call. An LLM turn cannot be interrupted, so a tool call is the earliest
   possible delivery point - which is why there is no file watcher. A cleared
   scratchpad advances the watermark but notifies nobody.
+- **Bounded context** (`compaction.py`): every phase agent gets
+  `Agent(compaction_strategy=..., default_options={"num_ctx": N})`; the
+  pipeline is selective tool-group eviction -> LLM summarization -> the
+  framework's deterministic fallback, budget `0.8 * (num_ctx - 1024)`,
+  checked on every model call (tool-loop iterations included). Ranker and
+  final-report agents get `num_ctx` only (single-turn). One console line
+  when it fires; no artifact files.
 
 ## Rules and gotchas
 

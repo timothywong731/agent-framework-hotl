@@ -240,6 +240,10 @@ async def _amain() -> None:
     parser = argparse.ArgumentParser(description="HOTL cloud migration readiness demo")
     parser.add_argument("--model", default=os.environ.get("OLLAMA_MODEL", DEFAULT_MODEL),
                         help="Ollama model tag (default: %(default)s)")
+    parser.add_argument("--num-ctx", type=int,
+                        default=int(os.environ.get("OLLAMA_NUM_CTX", 4096)),
+                        help="Ollama context window in tokens; also sizes the "
+                             "compaction budget (default: %(default)s)")
     parser.add_argument("--data", type=Path, default=Path("sample_data"),
                         help="sample data directory")
     parser.add_argument("--max-questions", type=int, default=3, metavar="N",
@@ -259,6 +263,7 @@ async def _amain() -> None:
     if args.max_questions < 0:
         parser.error("--max-questions must be >= 0")
     os.environ["OLLAMA_MODEL"] = args.model  # OllamaChatClient reads this
+    os.environ["OLLAMA_NUM_CTX"] = str(args.num_ctx)  # compaction.py reads this
     base_url = normalize_host(os.environ.get("OLLAMA_HOST", "http://localhost:11434"))
     preflight(base_url, args.model)
     ensure_scratchpad(SCRATCHPAD_PATH)

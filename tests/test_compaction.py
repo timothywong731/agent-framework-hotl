@@ -131,3 +131,56 @@ def test_log_line_on_change(capsys):
     assert out.count("\n") == 1
     assert out.startswith("  deep_analysis:oms-monolith: compacted context ")
     assert "messages" in out and "tokens" in out
+
+
+# -- spike-as-test: compaction fires per model call in the tool loop ------
+
+from agent_framework import Agent, BaseChatClient, ChatResponse, FunctionInvocationLayer
+
+
+class ScriptedToolClient(FunctionInvocationLayer, BaseChatClient):
+    """Two-beat script: call the 'ping' tool, then produce final text.
+
+    Composes the same layers OllamaChatClient does (minus middleware and
+    telemetry), so the tool loop and the compaction hook are the real ones.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.model_calls = 0
+
+    async def _inner_get_response(self, *, messages, stream, options, **kwargs):
+        self.model_calls += 1
+        if self.model_calls == 1:
+            return ChatResponse(messages=[Message(role="assistant", contents=[
+                Content(type="function_call", call_id="c1", name="ping",
+                        arguments="{}")])])
+        return ChatResponse(messages=[Message(role="assistant", contents=["done"])])
+
+
+class CountingStrategy:
+    """No-op CompactionStrategy that counts invocations."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def __call__(self, messages):
+        self.calls += 1
+        return False
+
+
+def test_compaction_runs_once_per_model_call_in_tool_loop():
+    def ping() -> str:
+        """Reply with pong."""
+        return "pong"
+
+    client = ScriptedToolClient()
+    strategy = CountingStrategy()
+    agent = Agent(client=client, name="spike", instructions="use tools",
+                  tools=[ping], compaction_strategy=strategy)
+    result = asyncio.run(agent.run("go"))
+    assert result.text == "done"
+    assert client.model_calls == 2
+    # THE design-carrying assertion: one compaction pass per model call,
+    # i.e. compaction also fires between tool iterations.
+    assert strategy.calls == 2

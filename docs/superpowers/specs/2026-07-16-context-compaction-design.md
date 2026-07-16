@@ -43,7 +43,8 @@ This spec adds a bounded context with two goals, per the brainstorm:
 Same one-concern-per-module shape as `steering.py`. ~60 lines. Exposes:
 
 - `resolve_num_ctx() -> int` — `OLLAMA_NUM_CTX` env var, default **4096** (Ollama's
-  server default). `main.py` gains a `--num-ctx` flag that sets the env var, mirroring
+  server default). A non-integer value fails fast at startup (plain `int()`, no
+  swallowing). `main.py` gains a `--num-ctx` flag that sets the env var, mirroring
   `--model` → `OLLAMA_MODEL`.
 - `build_compaction_strategy(label: str, num_ctx: int) -> CompactionStrategy` — builds
   the hybrid pipeline below, wrapped in the logging decorator.
@@ -77,7 +78,8 @@ with two stages, in order:
 2. **LLM summarization second, only if still over budget:**
    `SummarizationStrategy(client=OllamaChatClient(default_options={"num_ctx": num_ctx}))`
    — same model via `OLLAMA_MODEL`, framework-default prompt and counts. Its own client
-   carries `num_ctx` so the summarization call is not itself truncated.
+   carries `num_ctx` so the summarization call is not itself truncated. One summarizer
+   client per executor (it is a stateless HTTP wrapper; nothing is shared).
 3. **Fallback (built into the composed strategy):** oldest-first group exclusion until
    under budget. The budget is therefore a hard guarantee.
 
@@ -135,9 +137,10 @@ message lists and a `FakeSummaryClient` (canned `get_response`, records calls):
 4. Log line printed on change; silence when under budget (`capsys`).
 5. `resolve_num_ctx`: default, env override, `--num-ctx` sets the env var.
 
-Plus the §2 spike-as-test: a `FakeAgent`-free integration check that the strategy is
-invoked once per model call across a multi-tool run (can live in the same file; if it
-needs a real `Agent` with a scripted client, follow `test_pipeline.py`'s technique).
+Plus the §2 spike-as-test: an integration check that the strategy is invoked once per
+model call across a multi-tool run. This one cannot use the `FakeAgent` seam (it
+bypasses the client layer where compaction lives); build a real `Agent` over a scripted
+chat client instead, following `test_pipeline.py`'s `_DriveAgent` technique.
 We test **our composition and wrapper**, not framework internals. The `OLLAMA_E2E=1`
 live test is unchanged and now implicitly exercises compaction.
 

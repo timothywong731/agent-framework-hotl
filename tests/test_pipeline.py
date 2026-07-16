@@ -50,7 +50,7 @@ def test_build_workflow_smoke_and_shape(tmp_path, monkeypatch):
 # -- LLM-free drive of the real assembled graph -----------------------------
 
 async def test_workflow_graph_drive_gate_revisions_report(tmp_path, monkeypatch):
-    from hotl_demo import phases, report
+    from hotl_demo import phases, report, review
     from hotl_demo.review import LedgerQuestionRequest
 
     store = ArtifactStore(tmp_path / "run", repos=REPOS)
@@ -59,23 +59,29 @@ async def test_workflow_graph_drive_gate_revisions_report(tmp_path, monkeypatch)
     def agent_factory(*_, name="", **__):
         return DriveAgent(name, store, calls)
 
-    for mod in (phases, report):
+    for mod in (phases, report, review):
         monkeypatch.setattr(mod, "Agent", agent_factory)
         monkeypatch.setattr(mod, "OllamaChatClient", lambda: None)
     workflow = build_workflow(store, Path("sample_data"), scratchpad_path=tmp_path / "pad.md")
 
-    # initial pass: fan-out/join runs all phases, gate pauses with one request per question
+    # initial pass: 5 raised, ranker consulted once, top-3 (reversed order:
+    # the LAST raised) presented, the other 2 deferred before the pause
     requests = {}
     async for ev in workflow.run("start", stream=True):
         if ev.type == "request_info" and isinstance(ev.data, LedgerQuestionRequest):
             requests[ev.request_id] = ev.data
-    assert {(q.phase, q.unit) for q in requests.values()} == set(DRIVE_TARGETS.values())
+    assert {q.question_id for q in requests.values()} == {"q-3", "q-4", "q-5"}
+    assert all(q.importance == "medium" and q.impact for q in requests.values())
+    assert [c for c in calls if c[1] == "rank"] and len([c for c in calls if c[1] == "rank"]) == 1
+    statuses = {e["id"]: e["status"] for e in store.read_ledger()}
+    assert statuses["q-1"] == "deferred" and statuses["q-2"] == "deferred"
     initial = [name for name, kind, _ in calls if kind == "initial"]
     assert initial[0] == "discovery" and len(initial) == 5
     assert initial.index("enterprise_context") > initial.index("analyze_oms-monolith")
     assert initial.index("enterprise_context") > initial.index("analyze_oms-batch-recon")
 
-    # answer everything: all five targets revise sequentially in phase order, then report
+    # answer all three: revisions are DERIVED from the ledger (q-2/q-3 analyzer
+    # attribution is racy between the concurrent analyzers), then the report
     outputs = []
     stream = workflow.run(stream=True, responses={rid: f"answer to {q.question_id}"
                                                   for rid, q in requests.items()})
@@ -84,16 +90,14 @@ async def test_workflow_graph_drive_gate_revisions_report(tmp_path, monkeypatch)
         if ev.type == "output":
             outputs.append(ev.data)
     assert outputs == [str(store.run_dir / "final_report.md")]
-    assert [name for name, kind, _ in calls if kind == "revision"] == [
-        "discovery", "analyze_oms-monolith", "analyze_oms-batch-recon",
-        "enterprise_context", "questionnaire",
-    ]
-    # revision prompts carry the current open ledger (question raised mid-revision)
-    monolith_rev = next(p for n, k, p in calls if k == "revision" and n == "analyze_oms-monolith")
-    assert "Raised during revision?" in monolith_rev
-
     ledger = store.read_ledger()
-    assert [e["status"] for e in ledger] == ["answered"] * 5 + ["open"]
+    answered = {(e["phase"], e["unit"]) for e in ledger if e["status"] == "answered"}
+    expected = [n for n, t in DRIVE_TARGETS.items() if t in answered]  # pipeline order
+    assert [name for name, kind, _ in calls if kind == "revision"] == expected
+
+    # the questionnaire's revision raised q-6 post-gate: open, never prompted
+    assert [e["status"] for e in ledger] == (
+        ["deferred", "deferred", "answered", "answered", "answered", "open"])
     final = store.read_report("final_report.md")
     assert "FINAL-VERDICT" in final and "## Adjudication log" in final
     assert "Raised during revision?" in final   # open question surfaces in the log

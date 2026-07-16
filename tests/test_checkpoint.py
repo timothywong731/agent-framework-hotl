@@ -52,7 +52,7 @@ from pathlib import Path
 
 from agent_framework import FileCheckpointStorage
 
-from conftest import DriveAgent
+from conftest import DRIVE_TARGETS, DriveAgent
 
 from hotl_demo.artifacts import REPOS, ArtifactStore
 from hotl_demo.main import map_answers, parse_review_answers, render_review_lines
@@ -70,7 +70,7 @@ async def test_pause_resume_cycle_revises_each_target_exactly_once(tmp_path, mon
     assert the resumed gate dispatches ONE ordered revision queue - not one
     per answer.
     """
-    from hotl_demo import phases, report
+    from hotl_demo import phases, report, review
     from hotl_demo.pipeline import (ALLOWED_CHECKPOINT_TYPES, WORKFLOW_NAME,
                                     gate_checkpoint)
 
@@ -81,7 +81,7 @@ async def test_pause_resume_cycle_revises_each_target_exactly_once(tmp_path, mon
     def patch_agents(store, calls):
         def agent_factory(*_, name="", **__):
             return DriveAgent(name, store, calls)
-        for mod in (phases, report):
+        for mod in (phases, report, review):
             monkeypatch.setattr(mod, "Agent", agent_factory)
             monkeypatch.setattr(mod, "OllamaChatClient", lambda: None)
 
@@ -94,16 +94,17 @@ async def test_pause_resume_cycle_revises_each_target_exactly_once(tmp_path, mon
     async for ev in wf1.run("start", stream=True):
         if ev.type == "request_info" and isinstance(ev.data, LedgerQuestionRequest):
             pending1[ev.request_id] = ev.data
-    assert len(pending1) == 5
+    # 5 raised; reversed-order ranking presents the LAST three; 2 deferred
+    assert {q.question_id for q in pending1.values()} == {"q-3", "q-4", "q-5"}
 
-    # the pause artifact: seed the sheet, then play the human filling it in
+    # the pause artifact: seeded with EXACTLY the presented set
     sheet = render_review_lines(store1.open_questions())
+    assert [json.loads(l)["id"] for l in sheet.splitlines()] == ["q-3", "q-4", "q-5"]
     answered = "".join(
         line.replace('"answer": ""', f'"answer": "answer to {json.loads(line)["id"]}"') + "\n"
         for line in sheet.splitlines()
     )
     answers = parse_review_answers(answered)
-    assert set(answers) == {q.question_id for q in pending1.values()}
     # decline-by-omission (q-5 is deterministically questionnaire's - it raises
     # last) and an unknown id, exercising the sheet's edge semantics end to end
     del answers["q-5"]
@@ -122,7 +123,7 @@ async def test_pause_resume_cycle_revises_each_target_exactly_once(tmp_path, mon
         if ev.type == "request_info" and isinstance(ev.data, LedgerQuestionRequest):
             pending2[ev.request_id] = ev.data
     assert set(pending2) == set(pending1)      # stable request ids
-    assert calls2 == []                        # restore re-ran ZERO phases
+    assert calls2 == []                        # restore re-ran ZERO phases (and no re-rank)
 
     outputs = []
     responses, unknown = map_answers(pending2, answers)
@@ -132,12 +133,14 @@ async def test_pause_resume_cycle_revises_each_target_exactly_once(tmp_path, mon
         if ev.type == "output":
             outputs.append(ev.data)
 
-    # THE regression assertions: one ordered queue, not one queue per answer.
-    # questionnaire was declined by omission, so exactly four targets revise.
-    revisions = [name for name, kind, _ in calls2 if kind == "revision"]
-    assert revisions == ["discovery", "analyze_oms-monolith", "analyze_oms-batch-recon",
-                         "enterprise_context"]
+    # one ordered queue; expectations DERIVED (analyzer attribution is racy);
+    # q-5 declined by omission means the questionnaire never revises
+    ledger = store2.read_ledger()
+    answered_targets = {(e["phase"], e["unit"]) for e in ledger if e["status"] == "answered"}
+    expected = [n for n, t in DRIVE_TARGETS.items() if t in answered_targets]
+    assert [name for name, kind, _ in calls2 if kind == "revision"] == expected
+    assert [name for name, kind, _ in calls2 if kind == "rank"] == []   # gate never re-ranks
     assert [name for name, kind, _ in calls2 if kind == "report"] == ["final_report"]
     assert outputs == [str(store2.run_dir / "final_report.md")]
-    statuses = [e["status"] for e in store2.read_ledger()]
-    assert statuses == ["answered"] * 4 + ["declined", "open"]  # open: raised mid-revision
+    assert [e["status"] for e in ledger] == (
+        ["deferred", "deferred", "answered", "answered", "declined"])

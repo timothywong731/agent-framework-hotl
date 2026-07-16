@@ -43,7 +43,7 @@ def test_prompt_human_declines_on_eof(monkeypatch, capsys):
         raise EOFError
 
     monkeypatch.setattr("builtins.input", raise_eof)
-    q = LedgerQuestionRequest("q-1", "discovery", None, "Scope?", "ctx", "in scope")
+    q = LedgerQuestionRequest("q-1", "discovery", None, "Scope?", "ctx", "in scope", "medium", "impact")
     assert _prompt_human(q) == ""                      # decline, not a crash
     assert "declining" in capsys.readouterr().out
 
@@ -81,8 +81,8 @@ def test_parse_review_answers_is_loud_on_malformed_input(bad, hint):
 
 
 def test_map_answers_missing_id_declines_and_unknown_ids_surface():
-    pending = {"r1": LedgerQuestionRequest("q-1", "discovery", None, "Q?", "c", "d"),
-               "r2": LedgerQuestionRequest("q-2", "discovery", None, "Q?", "c", "d")}
+    pending = {"r1": LedgerQuestionRequest("q-1", "discovery", None, "Q?", "c", "d", "medium", "impact"),
+               "r2": LedgerQuestionRequest("q-2", "discovery", None, "Q?", "c", "d", "medium", "impact")}
     responses, unknown = map_answers(pending, {"q-1": "yes", "q-99": "ghost"})
     assert responses == {"r1": "yes", "r2": ""}   # q-2 unanswered -> decline
     assert unknown == ["q-99"]                    # warned by the caller, ignored

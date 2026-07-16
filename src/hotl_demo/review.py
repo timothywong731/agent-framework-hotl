@@ -10,12 +10,14 @@ order - before releasing the final report.
 # ctx via inspect.signature (not get_type_hints), so PEP 563 string annotations
 # leave WorkflowContext[...] unresolved and validation rejects it. Eager
 # annotations (all runtime-valid on py3.10+) are required for the response handler.
+import re
 from dataclasses import dataclass
 
-from agent_framework import Executor, WorkflowContext, handler, response_handler
+from agent_framework import Agent, Executor, WorkflowContext, handler, response_handler
+from agent_framework.ollama import OllamaChatClient
 
-from .artifacts import ArtifactStore
-from .phases import PhaseDone, ReportTrigger, RevisionDone, RevisionTrigger
+from .artifacts import ArtifactStore, Importance
+from .phases import PROMPT_ENV, PhaseDone, ReportTrigger, RevisionDone, RevisionTrigger
 
 
 @dataclass
@@ -29,6 +31,8 @@ class LedgerQuestionRequest:
         question: The question itself.
         context: Evidence that motivated it.
         default_assumption: What applies if the human declines.
+        importance: The raising agent's declared importance (high/medium/low).
+        impact: How the human's answer would change the migration decision.
     """
 
     question_id: str
@@ -37,6 +41,8 @@ class LedgerQuestionRequest:
     question: str
     context: str
     default_assumption: str
+    importance: str
+    impact: str
 
 
 def affected_targets(ledger: list[dict],
@@ -83,14 +89,89 @@ def answers_for(ledger: list[dict], phase: str, unit: str | None) -> list[dict]:
             if e["status"] == "answered" and e["phase"] == phase and e["unit"] == unit]
 
 
+_QID_RE = re.compile(r"q-\d+")
+
+
+def validate_ranking(candidate_ids: list[str], text: str) -> list[str] | None:
+    """Extract a ranking from the model's text; None unless it is exactly right.
+
+    Tolerant of bullets, numbering, and prose (ids are regex-extracted in
+    order) but strict about the set: every candidate exactly once, nothing
+    else. Anything less returns ``None`` so the caller can retry or fall back.
+
+    Args:
+        candidate_ids: The ids that must appear.
+        text: Raw model output.
+
+    Returns:
+        The extracted ordering, or ``None`` when it is not a permutation.
+
+    Example:
+        >>> validate_ranking(["q-1", "q-2"], "1. q-2\\n2. q-1")
+        ['q-2', 'q-1']
+        >>> validate_ranking(["q-1", "q-2"], "q-2") is None
+        True
+    """
+    found = _QID_RE.findall(text or "")
+    return found if sorted(found) == sorted(candidate_ids) else None
+
+
+def split_ranked(ranked_ids: list[str], open_questions: list[dict],
+                 max_questions: int) -> tuple[list[dict], list[dict]]:
+    """Split into (presented, deferred): winners are the ranked prefix.
+
+    Both output lists are in LEDGER order - ranking decides membership, not
+    display order, so prompts and seeded answer sheets stay stable.
+
+    Args:
+        ranked_ids: Ids ordered most-influential-first.
+        open_questions: The open ledger entries, in ledger order.
+        max_questions: Slot count.
+
+    Returns:
+        ``(presented, deferred)`` ledger-entry lists.
+    """
+    winners = set(ranked_ids[:max_questions])
+    presented = [q for q in open_questions if q["id"] in winners]
+    deferred = [q for q in open_questions if q["id"] not in winners]
+    return presented, deferred
+
+
+def fallback_order(open_questions: list[dict]) -> list[str]:
+    """Degraded ranking used ONLY when the ranker fails twice.
+
+    Importance tier, then numeric id - deterministic so a broken model still
+    yields a defensible selection. The semantic path is the normal one.
+
+    Args:
+        open_questions: Open ledger entries.
+
+    Returns:
+        Ids ordered by (tier, numeric id).
+
+    Example:
+        >>> fallback_order([{"id": "q-2", "importance": "low"},
+        ...                 {"id": "q-7", "importance": "high"}])
+        ['q-7', 'q-2']
+    """
+    tier = {Importance.HIGH: 0, Importance.MEDIUM: 1, Importance.LOW: 2}
+    return [q["id"] for q in sorted(
+        open_questions,
+        key=lambda q: (tier[Importance(q["importance"])], int(q["id"].split("-")[1])),
+    )]
+
+
 class ReviewExecutor(Executor):
     """Single-shot human gate between ``questionnaire`` and ``final_report``.
 
     State machine:
 
     1. ``on_questionnaire_done`` - latch ``review_completed`` (the
-       review-once rule), then emit one ``request_info`` per open question;
-       the workflow run goes idle until the CLI resumes it with responses.
+       review-once rule); when open questions exceed the slot budget, one
+       semantic ranking call picks the winners (validated, retried once,
+       degraded fallback) and the losers are marked ``deferred`` in the
+       ledger BEFORE pausing; then one ``request_info`` per presented
+       question idles the run until the CLI resumes it with responses.
     2. ``on_answer`` (once per question) - record the verdict; when the ledger
        has no open questions left (all verdicts in - a FILE-backed check, so a
        checkpoint-resumed gate, which is a fresh instance, behaves the same),
@@ -104,8 +185,9 @@ class ReviewExecutor(Executor):
     """
 
     def __init__(self, store: ArtifactStore,
-                 revision_order: list[tuple[str, str | None]]) -> None:
-        """Remember the store and the canonical re-run ordering.
+                 revision_order: list[tuple[str, str | None]],
+                 max_questions: int = 3, ranker: object | None = None) -> None:
+        """Remember the store, the re-run ordering, and the slot budget.
 
         Deliberately no adjudication counters here: gate progress must be
         derived from the ledger so that a checkpoint resume (fresh instance)
@@ -115,10 +197,21 @@ class ReviewExecutor(Executor):
             store: The run's shared artifact store.
             revision_order: Every ``(phase, unit)`` in pipeline order,
                 exactly as built from the phase specs.
+            max_questions: Slot budget; ``0`` defers everything (the fully
+                autonomous defaults-only run).
+            ranker: Test seam - a scripted stand-in replaces the tool-less
+                Ollama-backed ranking ``Agent`` when provided.
         """
         super().__init__(id="review")
         self._store = store
         self._revision_order = revision_order
+        self._max_questions = max_questions
+        self._ranker = ranker or Agent(
+            client=OllamaChatClient(),  # model comes from OLLAMA_MODEL env var
+            name="review_ranker",
+            instructions="You rank open review questions by how much their "
+                         "answers would change the final migration readiness report.",
+        )
         self._queue: list[RevisionTrigger] = []
 
     @handler
@@ -142,8 +235,26 @@ class ReviewExecutor(Executor):
         if not open_qs:
             await ctx.send_message(ReportTrigger())
             return
-        print(f"\n== REVIEW - {len(open_qs)} open questions ==")
-        for q in open_qs:
+        if self._max_questions == 0:
+            presented, deferred = [], open_qs
+        elif len(open_qs) <= self._max_questions:
+            # No competition: never spend an LLM call ranking a full fit.
+            presented, deferred = open_qs, []
+        else:
+            ranked = await self._rank(open_qs)
+            presented, deferred = split_ranked(ranked, open_qs, self._max_questions)
+        if deferred:
+            # Written BEFORE the workflow idles: a --pause checkpoint and its
+            # seeded review.jsonl already reflect the competition.
+            self._store.defer_questions([q["id"] for q in deferred])
+            print(f"\n== REVIEW - presenting {len(presented)} of {len(open_qs)} "
+                  f"open questions ({len(deferred)} deferred to defaults) ==")
+        else:
+            print(f"\n== REVIEW - {len(open_qs)} open questions ==")
+        if not presented:
+            await ctx.send_message(ReportTrigger())
+            return
+        for q in presented:
             # One request_info per question: the workflow idles after this
             # handler returns, until the runner calls run(responses={...}).
             await ctx.request_info(
@@ -151,9 +262,37 @@ class ReviewExecutor(Executor):
                     question_id=q["id"], phase=q["phase"], unit=q["unit"],
                     question=q["question"], context=q["context"],
                     default_assumption=q["default_assumption"],
+                    importance=q["importance"], impact=q["impact"],
                 ),
                 response_type=str,
             )
+
+    async def _rank(self, open_qs: list[dict]) -> list[str]:
+        """One semantic ranking call, fenced: validate -> retry once -> fallback.
+
+        Args:
+            open_qs: Open ledger entries competing for the slots.
+
+        Returns:
+            Ids ordered most-influential-first; always a valid permutation.
+        """
+        ids = [q["id"] for q in open_qs]
+        prompt = PROMPT_ENV.get_template("rank_questions.md").render(
+            questions=open_qs, max_questions=self._max_questions)
+        first = await self._ranker.run(prompt)
+        ranked = validate_ranking(ids, first.text or "")
+        if ranked is None:
+            retry = (prompt
+                     + "\n\nYour previous response was invalid:\n"
+                     + (first.text or "(empty)")
+                     + f"\n\nRespond with exactly {len(ids)} lines - the ids "
+                     + ", ".join(ids) + " - one per line, most influential first.")
+            second = await self._ranker.run(retry)
+            ranked = validate_ranking(ids, second.text or "")
+        if ranked is None:
+            print("  [ranker] invalid ranking after retry - falling back to importance order")
+            ranked = fallback_order(open_qs)
+        return ranked
 
     @response_handler
     async def on_answer(

@@ -104,7 +104,8 @@ DRIVE_TARGETS = {
 class DriveAgent:
     """Stands in for every Agent when driving the REAL assembled graph LLM-free:
     raises one question per phase on the initial pass, one extra during
-    discovery's revision, records call order. Shared by test_pipeline.py and
+    the questionnaire's revision, answers the review ranker with REVERSED
+    ledger order, records call order. Shared by test_pipeline.py and
     test_checkpoint.py (the pause/resume cycle)."""
 
     def __init__(self, name, store, calls):
@@ -115,6 +116,12 @@ class DriveAgent:
         return f"{self.name}-session"
 
     async def run(self, prompt, *, session=None):
+        if self.name == "review_ranker":
+            # Reversed ledger order: deterministic, and deliberately NOT the
+            # raise order - proves selection follows the ranking.
+            ids = [q["id"] for q in self.store.open_questions()]
+            self.calls.append((self.name, "rank", prompt))
+            return FakeAgentResult("\n".join(reversed(ids)))
         if self.name == "final_report":
             self.calls.append((self.name, "report", prompt))
             return FakeAgentResult("FINAL-VERDICT")
@@ -124,8 +131,11 @@ class DriveAgent:
         if kind == "initial":
             self.store.update_memory(phase, unit, f"finding_{len(self.calls)}", "v")
             self.store.raise_question(phase, unit, f"Q from {self.name}?", "ctx", "default",
-                                       importance="medium", impact="swings the verdict")
-        elif self.name == "discovery":
+                                      importance="medium", impact="swings the verdict")
+        elif self.name == "questionnaire":
+            # Post-gate question: questionnaire is a ranking WINNER (reversed
+            # order favors late raisers), so its revision reliably fires when
+            # its question is answered - unlike discovery, which now defers.
             self.store.raise_question(phase, unit, "Raised during revision?", "ctx", "post-gate",
-                                       importance="medium", impact="swings the verdict")
+                                      importance="low", impact="none")
         return FakeAgentResult(f"REPORT[{self.name}][{kind}]")

@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_markdown_lint():
     """The linted set passes pymarkdown with the repo's .pymarkdown.json config."""
-    targets = ["README.md", "src/hotl_demo/prompts"]
+    targets = ["README.md", "src/hotl_demo/prompts", "src/reflexion_demo/prompts"]
     if (ROOT / "CLAUDE.md").exists():
         targets.append("CLAUDE.md")
     proc = subprocess.run(

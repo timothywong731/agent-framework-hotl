@@ -9,10 +9,15 @@ affected phases with the human's answers, and accepts freeform steering via a
 **scratchpad** file - read at phase start, and pushed to agents mid-run when
 the human edits it while the pipeline is working.
 
+The repo also carries a second, standalone demo of the **reflexion**
+pattern - a worker/reviewer loop with information parity and budget-forced
+convergence - see [The reflexion demo](#the-reflexion-demo).
+
 Design specs:
-`docs/superpowers/specs/2026-07-14-hotl-pipeline-design.md` (pipeline) and
+`docs/superpowers/specs/2026-07-14-hotl-pipeline-design.md` (pipeline),
 `docs/superpowers/specs/2026-07-15-live-scratchpad-steering-design.md`
-(live steering)
+(live steering), and
+`docs/superpowers/specs/2026-07-17-reflexion-demo-design.md` (reflexion)
 
 ## The pipeline
 
@@ -318,6 +323,118 @@ Every mutation goes through `ArtifactStore` (one lock, atomic temp-file +
 `os.replace`), because the two analyzers write concurrently and a human may
 have the files open mid-run.
 
+## The reflexion demo
+
+`poetry run reflexion` is a separate, self-contained demo in the same repo:
+no imports from `hotl_demo`, only `sample_data/` and the local Ollama model
+are shared. A **worker** agent researches a migration topic and writes a
+report; a **reviewer** agent - holding the *same* read tools over the *same*
+corpus - verifies that report against the sources itself and returns a
+boolean verdict. Rejection feedback steers the next draft. Two budgets
+guarantee the loop always lands on a report.
+
+```mermaid
+flowchart LR
+    T(["--topic"]) --> W
+    W["worker<br>explores corpus with tools,<br>delivers via write_report"]
+    R["reviewer<br>read_report + re-checks the<br>same corpus independently"]
+    W -->|DraftReady| R
+    R -->|"ReviewVerdict<br>(approved, feedback)"| V{verdict?}
+    V -->|approved| OK(["report.md ships - approved"])
+    V -->|"rejected, cycles left:<br>feedback steers the redraft"| W
+    V -->|"rejected at --max-cycles"| FF["forced finalize<br>read tools stripped at construction:<br>write_report only"]
+    FF --> UN(["report.md ships - unapproved<br>(review_log.jsonl: forced: true)"])
+```
+
+The graph is the framework's native cyclic-workflow shape (the same
+`WorkflowBuilder` mechanics as the HOTL pipeline, two nodes and two message
+types instead of seven): `worker -> reviewer -> worker`, with the worker
+yielding the terminal output.
+
+### Information parity
+
+The reviewer never takes the author's word for anything - and it can't be
+fobbed off, because it holds the identical corpus binding:
+
+| Tool | Worker | Reviewer | Counts against the budget |
+|---|---|---|---|
+| `list_files` / `read_file` (corpus) | yes | yes | yes |
+| `write_report` | yes | - | no - delivery, not exploration |
+| `read_report` | - | yes | yes |
+
+Parity of information, asymmetry of authority: both agents see the same
+sources; only the worker can write the report, only the reviewer can approve
+it. The reviewer judges what was actually **written** (`read_report`), not
+what the worker claims in conversation.
+
+### Two budgets, one ending
+
+Both budgets finish the same way: tools are taken away and the agent is told
+to produce from what it already has.
+
+- **Per-turn tool budget** (`--max-tool-calls`, default 12). Function
+  middleware counts read-tool calls; the call that exhausts the budget still
+  executes, then the read tools are stripped for the rest of the turn (the
+  framework's live `remove_tools()` mutation point) and the nudge rides on
+  that tool's result: *"you have been reasoning for a long time - produce
+  the report now from the information you already have."* `write_report`
+  survives the strip. Applies to worker and reviewer alike.
+- **Review-cycle budget** (`--max-cycles`, default 3). A rejection at the
+  last cycle triggers one final worker turn whose agent is *constructed*
+  without read tools - then the report ships regardless, logged as forced.
+
+```mermaid
+sequenceDiagram
+    participant W as worker turn
+    participant B as budget middleware
+    participant R as reviewer turn
+
+    Note over W: fresh agent + fresh budget every turn
+    W->>W: list_files / read_file ... (counted)
+    B-->>W: exhausting call: read tools stripped,<br>"produce the report from what you have"
+    W->>W: write_report (exempt)
+    W->>R: DraftReady
+    Note over R: same corpus tools, same budget rules
+    R->>R: read_report, spot-check claims against sources
+    R->>R: structured-verdict turn (approved + feedback)
+    R->>W: ReviewVerdict
+```
+
+The reviewer's turn is deliberately two calls in one session: an exploration
+call with tools, then a schema-forced verdict call
+(`{"approved": bool, "feedback": str}`). A verdict that fails to parse gets
+one retry and then **fails closed** - an unverifiable draft is rejected,
+never shipped as approved.
+
+### Run the reflexion demo
+
+```bash
+poetry run reflexion                                    # defaults: 3 cycles, 12 tool calls/turn
+poetry run reflexion --max-cycles 2 --max-tool-calls 8  # quickest full tour of both budgets
+poetry run reflexion --topic "Assess retiring IBM MQ"   # any topic over the same corpus
+```
+
+The default topic (assess migrating OMS file storage from NFS to S3) is
+chosen so the planted corpus conflicts - the Azure mandate vs `s3_uploader.py`,
+data-residency and secrets standards - give the reviewer real grounds to
+reject a shallow first draft. Watch the console for the mechanism firing:
+
+```text
+  [worker] tool budget exhausted (12 calls) - read tools stripped
+  [reviewer] cycle 1: REJECTED
+  [reviewer] feedback: The report ignores the enterprise Azure mandate...
+== review budget exhausted: forced finalize (read tools stripped) ==
+```
+
+Artifacts land in `output/reflexion_<timestamp>/`: `report.md` (each
+revision overwrites atomically) and `review_log.jsonl` - one line per cycle
+plus an outcome line, written by plain code, never by the model:
+
+```json
+{"cycle": 1, "approved": false, "feedback": "...", "forced": false,
+ "worker_tool_calls": 12, "reviewer_tool_calls": 9}
+```
+
 ## Prerequisites
 
 - Python 3.10+ and [Poetry](https://python-poetry.org/)
@@ -403,5 +520,5 @@ the agents reliably find questions worth asking a human.
 ```bash
 poetry run pytest                              # fast, LLM-free (includes markdown lint)
 OLLAMA_E2E=1 poetry run pytest -m ollama -s    # full live pipeline (slow)
-poetry run pymarkdown --config .pymarkdown.json scan README.md CLAUDE.md src/hotl_demo/prompts
+poetry run pymarkdown --config .pymarkdown.json scan README.md CLAUDE.md src/hotl_demo/prompts src/reflexion_demo/prompts
 ```

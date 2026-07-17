@@ -48,6 +48,7 @@ src/reflexion_demo/
   graph.py      # Worker/Reviewer executors, messages, WorkflowBuilder
   tools.py      # corpus read tools + write_report/read_report factories
   budget.py     # ToolBudget + stripping function-middleware
+  prompting.py  # Jinja2 env + render helpers for the two templates
   prompts/
     worker.md   # Jinja2; initial/revision/finalize variants via context vars
     reviewer.md # Jinja2; verdict instructions

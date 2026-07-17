@@ -14,7 +14,8 @@ from reflexion_demo.graph import (
 from reflexion_demo.tools import ReportFlag, atomic_write
 
 
-def _worker_factory(run_dir, *, write=True, spent=3):
+def _worker_factory(run_dir, *, write=True, spent=3,
+                    texts=("draft text", "retry text")):
     """Fake agent factory: each call yields a FakeAgent whose side effect
     mimics the write_report tool (writes the file, sets the flag)."""
     calls = []
@@ -28,7 +29,7 @@ def _worker_factory(run_dir, *, write=True, spent=3):
                 atomic_write(run_dir / "report.md", f"# Draft after: {prompt[:40]}")
                 flag.written = True
 
-        agent = FakeAgent(["draft text", "retry text"], side_effect=side_effect)
+        agent = FakeAgent(list(texts), side_effect=side_effect)
         agent_holder["agent"] = agent
         calls.append({"finalize": finalize, "agent": agent, "flag": flag})
         return agent, ToolBudget(max_calls=12, spent=spent), flag
@@ -115,7 +116,11 @@ async def test_rejection_at_budget_forces_toolless_finalize(tmp_path):
 
 
 async def test_missing_write_report_gets_one_nudge_then_text_fallback(tmp_path):
-    factory = _worker_factory(tmp_path, write=False)        # tool never "runs"
+    # The classic failure: the model emits the full report as plain chat text,
+    # then answers the nudge with filler. The fallback must keep the report.
+    factory = _worker_factory(
+        tmp_path, write=False,                              # tool never "runs"
+        texts=["# Migration Report\n\nLots of real content here.", "Done."])
     worker = WorkerExecutor(factory, tmp_path, max_cycles=3)
     await worker.on_topic("t", FakeCtx())
 
@@ -123,7 +128,18 @@ async def test_missing_write_report_gets_one_nudge_then_text_fallback(tmp_path):
     assert len(agent.prompts) == 2                          # draft + one nudge
     assert "write_report" in agent.prompts[1]
     report = (tmp_path / "report.md").read_text(encoding="utf-8")
-    assert report == "retry text"                           # final text persisted
+    assert report == "# Migration Report\n\nLots of real content here."
+
+
+async def test_fallback_uses_nudge_text_when_draft_said_nothing(tmp_path):
+    factory = _worker_factory(
+        tmp_path, write=False,
+        texts=["", "# Report delivered only after the nudge."])
+    worker = WorkerExecutor(factory, tmp_path, max_cycles=3)
+    await worker.on_topic("t", FakeCtx())
+
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert report == "# Report delivered only after the nudge."
 
 
 async def test_full_loop_reject_then_approve_llm_free(tmp_path):

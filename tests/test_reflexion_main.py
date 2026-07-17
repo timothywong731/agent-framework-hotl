@@ -3,6 +3,7 @@ import pytest
 
 from reflexion_demo.main import (
     DEFAULT_TOPIC,
+    ensure_corpus,
     make_reviewer_factory,
     make_worker_factory,
     model_present,
@@ -32,6 +33,14 @@ def test_resolve_num_ctx_env_default(monkeypatch):
 
 def test_default_topic_is_the_s3_assessment():
     assert "NFS file store" in DEFAULT_TOPIC and "S3" in DEFAULT_TOPIC
+
+
+def test_ensure_corpus_fails_fast_when_missing(tmp_path):
+    # rglob on a missing dir silently yields nothing, which would let the
+    # demo "succeed" with an evidence-free report - so this must exit loud.
+    with pytest.raises(SystemExit, match="sample_data"):
+        ensure_corpus(tmp_path / "sample_data")
+    ensure_corpus(tmp_path)  # existing directory: no complaint
 
 
 def _tool_names(agent):

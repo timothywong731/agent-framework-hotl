@@ -238,12 +238,16 @@ class WorkerExecutor(Executor):
         """
         agent, budget, flag = self._agent_factory(finalize)
         session = agent.create_session()
-        result = await agent.run(prompt, session=session)
+        draft = await agent.run(prompt, session=session)
         if not flag.written:
-            result = await agent.run(_WRITE_REPORT_NUDGE, session=session)
+            retry = await agent.run(_WRITE_REPORT_NUDGE, session=session)
             if not flag.written:
-                # Last resort: the turn's final text IS the report.
-                text = (result.text or "").strip() or "(no report produced)"
+                # Last resort: the turn's LONGEST text is the report - not the
+                # latest. The model often emits the full report as plain chat
+                # text in the draft run and answers the nudge with filler
+                # ("Done."), which must not clobber the real content.
+                text = max(((draft.text or "").strip(), (retry.text or "").strip()),
+                           key=len) or "(no report produced)"
                 atomic_write(self._report_path, text)
                 print("  [worker] write_report never called - persisted final text instead")
         self._last_spent = budget.spent

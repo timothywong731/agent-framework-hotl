@@ -55,6 +55,19 @@ def model_present(tags: dict, model: str) -> bool:
     return wanted in names
 
 
+def ensure_corpus(corpus_root: Path) -> None:
+    """Fail fast when the corpus directory is missing.
+
+    ``rglob`` on a missing directory silently yields nothing, so without this
+    guard a run from the wrong working directory would "succeed" with an
+    evidence-free, hallucinated report.
+    """
+    if not corpus_root.is_dir():
+        raise SystemExit(
+            f"Corpus directory '{corpus_root}' not found. Run the demo from "
+            "the repository root (it reads sample_data/).")
+
+
 def preflight(base_url: str, model: str) -> None:
     """Fail fast with an actionable message before any LLM work starts."""
     try:
@@ -137,12 +150,13 @@ async def _amain() -> None:
         parser.error("--max-tool-calls must be >= 1")
     os.environ["OLLAMA_MODEL"] = args.model
     os.environ["OLLAMA_NUM_CTX"] = str(args.num_ctx)
+    corpus_root = Path("sample_data")
+    ensure_corpus(corpus_root)
     preflight(normalize_host(os.environ.get("OLLAMA_HOST", "http://localhost:11434")),
               args.model)
 
     run_dir = Path("output") / datetime.now().strftime("reflexion_%Y%m%d_%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=True)
-    corpus_root = Path("sample_data")
     report_path = run_dir / REPORT_FILENAME
 
     worker = WorkerExecutor(

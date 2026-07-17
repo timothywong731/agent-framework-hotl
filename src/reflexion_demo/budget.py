@@ -1,11 +1,13 @@
 """Per-turn tool-call budget and the mid-turn read-tool strip.
 
 One function middleware owns the counter. Read tools count; ``write_report``
-is exempt (delivery, not exploration). On the call that exhausts the budget
-the middleware executes the call normally, strips the read tools for the
-remainder of the turn via the framework's live-mutation point
+is exempt (delivery, not exploration). Once the budget is spent the
+middleware executes the call normally, strips the read tools for the
+remainder of the run via the framework's live-mutation point
 (``FunctionInvocationContext.remove_tools``), and appends a nudge to that
-call's result so the model knows why its tools vanished.
+call's result so the model knows why its tools vanished. A turn can span
+several ``agent.run`` calls and the framework rebuilds the live tool list
+per run, so the strip re-fires on every run that re-arms a budgeted tool.
 """
 from dataclasses import dataclass
 
@@ -47,14 +49,21 @@ def make_budget_middleware(budget: ToolBudget, budgeted, label: str):
         if context.function.name not in budgeted:
             return
         budget.spent += 1
-        # == not >=: queued calls from the in-flight batch still execute and
-        # count, but the strip and the nudge must happen exactly once.
-        if budget.spent == budget.max_calls:
-            if context.tools is not None:
-                # Names not present are ignored by the framework, so passing
-                # the whole budgeted set is safe for both agents.
-                context.remove_tools(sorted(budgeted))
-            context.result = f"{context.result or ''}\n\n{BUDGET_NUDGE}"
-            print(f"  [{label}] tool budget exhausted ({budget.max_calls} calls) - read tools stripped")
+        if budget.spent < budget.max_calls:
+            return
+        # >= not ==: both executors make two run() calls on one budget, and
+        # the framework rebuilds the live tool list per run, so a strip does
+        # not persist and the re-armed run can push ``spent`` past max. The
+        # live list is the once-per-run "stripped" flag: budgeted names
+        # present -> strip + nudge; absent -> in-flight batch stragglers
+        # from an already-stripped run pass through silently.
+        if context.tools is not None:
+            if not any(getattr(t, "name", t) in budgeted for t in context.tools):
+                return
+            # Names not present are ignored by the framework, so passing
+            # the whole budgeted set is safe for both agents.
+            context.remove_tools(sorted(budgeted))
+        context.result = f"{context.result or ''}\n\n{BUDGET_NUDGE}"
+        print(f"  [{label}] tool budget exhausted ({budget.max_calls} calls) - read tools stripped")
 
     return budget_middleware

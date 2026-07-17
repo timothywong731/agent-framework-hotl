@@ -74,6 +74,7 @@ class FakeAgent:
         self.texts = list(texts)
         self.prompts = []
         self.sessions = []
+        self.run_kwargs = []
         self.created_sessions = []
         self.side_effect = side_effect  # optional callable(prompt) run per call
 
@@ -83,10 +84,11 @@ class FakeAgent:
         self.created_sessions.append(session)
         return session
 
-    async def run(self, prompt, *, session=None):
-        """Record prompt + session, fire the side effect, pop the next text."""
+    async def run(self, prompt, *, session=None, **kwargs):
+        """Record prompt + session + extra kwargs, fire the side effect, pop the next text."""
         self.prompts.append(prompt)
         self.sessions.append(session)
+        self.run_kwargs.append(kwargs)
         if self.side_effect:
             self.side_effect(prompt)
         return FakeAgentResult(self.texts.pop(0) if self.texts else "")

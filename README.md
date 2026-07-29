@@ -537,6 +537,106 @@ plus an outcome line, written by plain code, never by the model:
  "worker_tool_calls": 12, "reviewer_tool_calls": 9}
 ```
 
+## The reflection demo
+
+`poetry run reflection` is the A/B foil to the reflexion demo, and the
+practical half of [Reflexion vs reflection](#reflexion-vs-reflection) above.
+Same corpus, same default topic, same worker tools, same report artifact -
+with exactly one variable changed: **the critic has no tools**.
+
+```mermaid
+flowchart LR
+    T(["--topic"]) --> W["worker agent<br>corpus tools + write_report"]
+    W -->|"AgentLoopMiddleware<br>should_continue"| J{"judge<br>bare OllamaChatClient<br>NO tools"}
+    J -->|"answered: false<br>reasoning relayed verbatim"| W
+    J -->|"answered: true"| OK(["report.md ships - answered"])
+    W -->|"pass == --max-passes<br>judge never consulted"| UN(["report.md ships - unjudged"])
+```
+
+There is no `WorkflowBuilder`, no executors and no message types: one agent,
+one `agent.run()` call, and `AgentLoopMiddleware` driving every pass from
+inside. That absence is the finding - reflexion needs a graph because it has
+two participants, reflection has one.
+
+### Running the A/B
+
+```bash
+poetry run reflection --max-passes 3
+poetry run reflexion  --max-cycles 3
+diff output/reflection_<ts>/report.md output/reflexion_<ts>/report.md
+```
+
+Both default to the same topic, so the reports are directly comparable. The
+planted corpus conflicts - the enterprise Azure mandate against
+`s3_uploader.py`, the data-residency and secrets standards - are reachable
+by *both* workers. Only the reflexion reviewer can open the sources and
+check whether the report actually addressed them.
+
+### What differs
+
+| | reflexion reviewer | reflection judge |
+|---|---|---|
+| What it is | an `Agent` node in a cyclic graph | a bare `OllamaChatClient`, called directly |
+| Corpus tools | `list_files`, `read_file` | none |
+| Report access | `read_report` - reads the file off disk | none - the transcript only |
+| Judges | what was **written** | what the worker **said** |
+| Terminal states | `approved` / `forced` (unapproved) | `answered` / `unjudged` |
+
+The rubric is deliberately identical on both sides - accuracy, coverage,
+actionability - so the only variable is evidence access.
+
+The framework states the asymmetry itself, in the docstring of its own judge
+builder: *"The judge is called directly (no agent tools, session, or
+middleware)."*
+
+### Three gotchas worth knowing
+
+`AgentLoopMiddleware` checks `max_iterations` **before** it evaluates
+`should_continue`, so on the capped pass the judge is never consulted and
+the report ships **unjudged** - the parallel of reflexion's forced finalize
+shipping unapproved. `--max-passes 1` is the degenerate case: one pass, zero
+verdicts.
+
+The judge fails **open**: an unparseable verdict keeps the loop running,
+where reflexion's reviewer fails **closed** and rejects. Both are right for
+their pattern - reflexion must never ship unverified work as approved, while
+here the pass cap is what guarantees termination.
+
+The judge is a bare `OllamaChatClient`, not an `Agent`, so `Agent`'s
+`default_options={"num_ctx": ...}` never reaches it: there is no `Agent`
+wrapper to carry that option. `num_ctx` has to be passed per call on
+`get_response` instead, or Ollama silently truncates the judge's context and
+it verdicts a report it only partly read - no error, no signal. The demo
+threads `--num-ctx` through the CLI for exactly this reason.
+
+`AgentLoopMiddleware` is `@experimental` and prints a warning on startup.
+That is not filtered, on purpose.
+
+Artifacts land in `output/reflection_<timestamp>/`: `report.md` and
+`reflection_log.jsonl`, the same line shape as `review_log.jsonl` so the two
+logs read side by side:
+
+```json
+{"pass": 1, "answered": false, "reasoning": "No mention of the Azure mandate...", "judged": true}
+{"pass": 2, "answered": null, "reasoning": null, "judged": false}
+{"outcome": "unjudged", "passes": 2, "report": "output/reflection_.../report.md"}
+```
+
+The demo could be one line shorter: `AgentLoopMiddleware.with_judge(client,
+criteria=[...])` builds almost this exact loop, and is not used, for two
+reasons. The lesser one: it builds the predicate internally, so the judge's
+verdicts - the whole payload of an A/B run - would be unobservable. The
+larger one: `with_judge`'s `_build_judge_condition` splats
+`*last_result.messages` into the judge's prompt, and that message list
+carries `role="tool"` messages with `function_result` content (the raw
+corpus text, verbatim) plus `assistant` messages with `text_reasoning`
+traces that can quote it too. The framework's built-in judge is not
+information-isolated: it reads the tool output. Verified against a live
+model with the worker explicitly instructed not to quote the file, and the
+corpus marker still reached the judge twice. This demo passes the judge only
+`last_result.text`, which filters to text content and excludes both
+channels.
+
 ## Prerequisites
 
 - Python 3.10+ and [Poetry](https://python-poetry.org/)

@@ -21,6 +21,8 @@ poetry run demo                                # needs local Ollama + gemma4:31b
 poetry run demo --pause                        # checkpoint + exit at the review gate
 poetry run demo --resume output/run_<ts>       # apply review.jsonl answers, finish the run
 poetry run demo --max-questions 5              # review-gate slot budget (0 = never pause)
+poetry run reflection                           # reflection A/B foil: tool-less judge
+poetry run reflection --max-passes 1            # degenerate case: one pass, never judged
 poetry run pytest                              # fast, LLM-free; includes the markdown lint gate
 poetry run pytest tests/test_review.py -v      # one file
 poetry run pytest tests/test_review.py::test_review_once_guard -v   # one test

@@ -351,6 +351,108 @@ The graph is the framework's native cyclic-workflow shape (the same
 types instead of seven): `worker -> reviewer -> worker`, with the worker
 yielding the terminal output.
 
+### Reflexion vs reflection
+
+The names are one letter apart and are often used interchangeably. They
+describe different loops:
+
+- **Reflection** - *"review your own output."* One agent critiques and
+  revises its own draft, judged against nothing but its own context.
+- **Reflexion** - *"review the worker's output."* A separate evaluator
+  judges the draft against an independent evidence channel and returns
+  verbal feedback that steers the next attempt.
+
+```mermaid
+flowchart TB
+    subgraph RX["Reflexion - review the WORKER'S output"]
+        direction TB
+        S1([Start]) --> W1["worker"]
+        W1 -->|"read/write"| C1[("corpus<br>+ report")]
+        W1 --> R1["reviewer"]
+        C1 -->|"read-only"| R1
+        R1 --> T1{"terminate?"}
+        T1 -->|"No<br>(+ verbal feedback)"| W1
+        T1 -->|Yes| E1([End])
+        N1["budgets: max cycles + tool calls per turn<br>last round: strip the tools, force termination"]
+    end
+    subgraph RF["Reflection - review YOUR OWN output"]
+        direction TB
+        S2([Start]) --> W2["worker"]
+        W2 -->|"read/write"| C2[("corpus<br>+ report")]
+        W2 --> T2{"terminate?"}
+        T2 -->|"No<br>(own critique)"| W2
+        T2 -->|Yes| E2([End])
+    end
+```
+
+The two loops look almost identical on paper, and the resemblance is the
+trap: the difference is not the node count, it is what the evaluator is
+allowed to *see* and what it is able to *say*. Strip either one and the
+pattern collapses back into reflection wearing a second hat:
+
+```mermaid
+flowchart LR
+    A["evaluator without tools"] --> B["cannot catch a<br>hallucinated claim"] --> C["information parity<br>is what buys the guard"]
+    D["evaluator without<br>verbal feedback"] --> E["cannot guide the worker<br>towards a better draft"] --> F["the feedback loop is<br>what buys convergence"]
+```
+
+A reviewer LLM with no tools is self-evaluation at twice the price: same
+weights, same priors, same blind spots that produced the error in the first
+place. A reviewer that returns a bare boolean can reject forever without
+ever telling the worker why.
+
+| | Reflection | Reflexion |
+|---|---|---|
+| Who judges | the worker, on its own output | a separate evaluator |
+| Judged against | its own context and chat history | an independent evidence channel - tools, tests, environment |
+| Feedback | implicit, inside one context | explicit text passed between turns |
+| Loop shape | worker self-loop | worker `<->` evaluator cycle |
+| Cost per round | one extra pass | two agent turns, each with tool calls |
+| Catches | format, structure, tone, omissions it can already see | claims contradicted by the sources |
+| Misses | anything it could not verify at generation time | anything outside the evaluator's reach |
+
+#### Strengths and tradeoffs
+
+**Reflexion** buys a guard that is independent of the thing it guards. The
+evaluator can contradict the worker on facts, because it can go and check.
+Feedback is actionable rather than a bare score, so rejection is steering
+and not just a retry. The verdict trail is auditable after the fact
+(`review_log.jsonl`). The price: two to ten times the tokens, a hard
+dependency on an evidence channel worth trusting, and a new failure mode -
+the evaluator is now the oracle, so a *wrong* rejection costs a full cycle
+and can push the worker away from a correct draft. Nothing about the loop
+guarantees termination, which is why both budgets exist.
+
+**Reflection** is one agent and no graph, and it genuinely works where
+verification is easier than generation *and* needs no outside evidence:
+formatting, structure, tone, "did I actually answer the question", "is this
+valid JSON". The price is that the model grading the work is the model that
+did the work. On reasoning tasks this is not merely a weaker guard - the
+published result is that intrinsic self-correction, with no external
+feedback, *degrades* accuracy more often than it improves it. Treat it as
+cheap polish, not as a correctness check.
+
+The dividing line: the moment the question becomes *"is this claim true"*
+rather than *"is this well written"*, self-critique has nothing to check
+against and you need a grounding channel.
+
+#### What this demo does and does not implement
+
+The demo is the loop above. It is not the full architecture from the
+Reflexion paper, which also accumulates every reflection in an episodic
+memory buffer carried across trials - the "verbal reinforcement learning"
+the paper is named for. Here the revision prompt receives the *latest*
+verdict's feedback plus the previous report; earlier critiques are recorded
+in `review_log.jsonl` but are not replayed to the worker. That is
+deliberate: the subject of this demo is information parity and budgeted
+termination, and a single-cycle feedback carry keeps the prompt small
+enough to run on a local model.
+
+Background reading: [Reflexion: Language Agents with Verbal Reinforcement
+Learning](https://arxiv.org/abs/2303.11366) (Shinn et al., 2023) and [Large
+Language Models Cannot Self-Correct Reasoning
+Yet](https://arxiv.org/abs/2310.01798) (Huang et al., ICLR 2024).
+
 ### Information parity
 
 The reviewer never takes the author's word for anything - and it can't be

@@ -107,15 +107,29 @@ class RunLog:
 def make_judge_predicate(judge_client, instructions: str, log: RunLog):
     """Build the ``should_continue`` predicate for ``AgentLoopMiddleware``.
 
-    Mirrors the framework's own ``_build_judge_condition`` - same message
-    layout, same ``JudgeVerdict`` schema, same marker fallback - but records
-    every verdict, which ``AgentLoopMiddleware.with_judge`` cannot: it builds
-    its predicate internally, so an approving verdict's reasoning would be
+    Follows the framework's own ``_build_judge_condition`` layout - same
+    ``JudgeVerdict`` schema, same marker fallback - but records every
+    verdict, which ``AgentLoopMiddleware.with_judge`` cannot: it builds its
+    predicate internally, so an approving verdict's reasoning would be
     unobservable and the A/B would lose its most interesting line.
 
+    One deliberate deviation: the framework's version splats
+    ``*last_result.messages`` into the judge prompt, which forwards
+    ``function_result`` content (raw tool output - i.e. the corpus, verbatim)
+    and ``text_reasoning`` traces (which can quote that same output) verbatim
+    to the judge. That is a real leak in ``_build_judge_condition`` /
+    ``with_judge``, not a hypothetical - a worker that reads the corpus via
+    ``read_file`` and never repeats it in its final text answer still hands
+    the judge the corpus, because the tool result rides along in the message
+    list. This defeats the asymmetry the whole demo is built to show. Here
+    we forward only ``last_result.text`` - ``AgentResponse.text`` filters to
+    text content, so tool results and reasoning traces never reach the
+    judge, no matter what the worker read.
+
     The judge is a bare chat client: no tools, no session, no middleware, no
-    corpus. It sees the original request and what the worker SAID, never the
-    report file. That asymmetry is the reflection pattern.
+    corpus. It sees the original request and what the worker SAID (text
+    only), never the report file and never raw tool output. That asymmetry
+    is the reflection pattern.
 
     Args:
         judge_client: Any chat client exposing ``get_response``.
@@ -132,7 +146,7 @@ def make_judge_predicate(judge_client, instructions: str, log: RunLog):
                 "Evaluate the agent's work. The user's original request follows:"]),
             *original_messages,
             Message("user", contents=["The agent's latest response was:"]),
-            *last_result.messages,
+            Message("assistant", contents=[last_result.text or "(no reply)"]),
             Message("user", contents=["Has the original request been fully addressed?"]),
         ]
         response = await judge_client.get_response(

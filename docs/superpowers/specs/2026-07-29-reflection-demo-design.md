@@ -143,6 +143,25 @@ The last row is the mechanism's sharp end. The reflexion reviewer opens
 A worker that *claims* in conversation to have addressed the Azure mandate
 can satisfy the judge without the report saying anything of the kind.
 
+**A finding about the framework itself:** the naive way to build "the
+agent's response messages" - splatting `*last_result.messages` into the
+judge prompt, which is exactly what the framework's own
+`_build_judge_condition` does (and therefore what `with_judge` does too) -
+does not honor this asymmetry. A tool-using pass's message list carries a
+`function_result` content item holding the tool's raw output verbatim, plus
+`text_reasoning` traces that can quote that same output, alongside the
+worker's final text answer. Forwarding the whole list hands the judge the
+corpus even when the worker's actual reply never repeats it - verified
+empirically against a live Ollama run, with a worker explicitly instructed
+not to quote the file: the secret marker reached the judge through the
+`function_result` and `text_reasoning` content, though it was absent from
+the concatenated text. `make_judge_predicate` therefore does not mirror the
+framework's message assembly on this one point: it forwards
+`last_result.text` only (`AgentResponse.text` filters to text content), so
+tool results and reasoning traces never reach the judge no matter what the
+worker read. `test_judge_never_sees_tool_results_or_reasoning_traces`
+(`tests/test_reflection_loop.py`) pins this as a regression.
+
 ## 5. Termination, and the unjudged last pass
 
 One bound: `--max-passes` (default 3) → `max_iterations`.

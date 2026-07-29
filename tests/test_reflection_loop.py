@@ -4,7 +4,7 @@ Also guards the framework behaviour the terminal semantics depend on:
 ``max_iterations`` short-circuits before ``should_continue``.
 """
 import pytest
-from agent_framework import AgentResponse, JudgeVerdict, Message
+from agent_framework import AgentResponse, Content, JudgeVerdict, Message
 
 from reflection_demo.judging import RunLog, make_judge_predicate, make_next_message
 
@@ -83,6 +83,39 @@ async def test_judge_sees_the_reply_not_the_report_file(tmp_path):
     assert "WHAT-THE-AGENT-SAID" in blob
     # No tools were offered to the judge at all.
     assert "tools" not in (client.calls[0]["options"] or {})
+
+
+async def test_judge_never_sees_tool_results_or_reasoning_traces(tmp_path):
+    """Regression: the framework's own message layout leaks raw tool output.
+
+    A real tool-using pass produces a message list with a ``function_result``
+    content item carrying the tool's raw output (here: the corpus) alongside
+    the worker's final text reply. Splatting ``*last_result.messages`` (what
+    the framework's ``_build_judge_condition`` does) forwards that content
+    item verbatim, handing the judge corpus text even when the worker's
+    actual answer never quotes it. The predicate must forward
+    ``last_result.text`` only - exactly one assistant message standing in
+    for the whole reply, and no non-text content anywhere in the transcript.
+    """
+    client = FakeJudgeClient(FakeChatResponse(JudgeVerdict(answered=True)))
+    predicate = make_judge_predicate(client, "judge instructions",
+                                     RunLog(tmp_path / "log.jsonl"))
+    secret = "ZZTOPSECRETCORPUSMARKER42"
+    tool_result = Content.from_function_result("call-1", result=f"The migration standard says: {secret}")
+    last_result = AgentResponse(messages=[
+        Message("assistant", contents=[tool_result]),
+        Message("assistant", contents=["Yes, it mentions a standard."]),
+    ])
+
+    await predicate(iteration=1, last_result=last_result,
+                    original_messages=[Message("user", contents=["t"])])
+
+    sent = client.calls[0]["messages"]
+    assistant_messages = [m for m in sent if m.role == "assistant"]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0].text == last_result.text
+    blob = "\n".join(m.text for m in sent)
+    assert secret not in blob
 
 
 async def test_predicate_falls_back_to_markers(tmp_path):

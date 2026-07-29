@@ -98,6 +98,60 @@ window and the compaction budget.
   final-report agents get `num_ctx` only (single-turn). One console line
   when it fires; no artifact files.
 
+## Upstream samples (microsoft/agent-framework)
+
+The framework's own examples are the fastest answer to "how is this meant to
+be done", and they move faster than the prose docs:
+<https://github.com/microsoft/agent-framework/tree/main/python/samples>.
+Read them without cloning:
+
+```bash
+# the whole file list
+gh api 'repos/microsoft/agent-framework/git/trees/main?recursive=1' \
+  --jq '.tree[] | select(.path|startswith("python/samples/")) | .path'
+# one file
+curl -sfL https://raw.githubusercontent.com/microsoft/agent-framework/main/python/samples/<path>
+```
+
+Layout: `01-get-started` (8 numbered walkthroughs), `02-agents` (the largest
+tree - middleware, tools, compaction, context providers, chat clients,
+skills), `03-workflows` (graphs: `control-flow`, `checkpoint`,
+`human-in-the-loop`, `orchestrations`, `parallelism`, `composition`,
+`declarative` YAML), `04-hosting`, `05-end-to-end`, plus
+`autogen-migration` and `semantic-kernel-migration`. `SAMPLE_GUIDELINES.md`
+at that root is the house style the samples themselves follow.
+
+Where this repo's pieces come from:
+
+| This repo | Sample |
+|---|---|
+| reflexion's worker `<->` reviewer cycle | `03-workflows/agents/workflow_as_agent_reflection_pattern.py`, `03-workflows/control-flow/simple_loop.py` |
+| `isinstance` edge conditions | `03-workflows/control-flow/edge_condition.py`, `switch_case_edge_group.py`, `multi_selection_edge_group.py` |
+| HOTL fan-out one analyzer per repo, then join | `03-workflows/parallelism/fan_out_fan_in_edges.py`, `aggregate_results_of_different_types.py` |
+| review gate (`ctx.request_info`) | `03-workflows/human-in-the-loop/sequential_request_info.py`, `concurrent_request_info.py` |
+| `--pause` / `--resume` | `03-workflows/checkpoint/checkpoint_with_resume.py`, `checkpoint_with_human_in_the_loop.py` |
+| compaction strategies | `02-agents/compaction/` (`basics.py`, `summarization.py`, `custom.py`, `agent_client_overrides.py`) |
+| scratchpad steering push | `02-agents/middleware/message_injection_middleware.py` |
+| tool budget, `remove_tools`, early stop | `02-agents/middleware/function_based_middleware.py`, `middleware_termination.py` |
+| single-agent reflection loops | `02-agents/middleware/agent_loop_middleware_judge.py`, `agent_loop_middleware_refinement.py`, `agent_loop_middleware_todos.py` |
+
+`AgentLoopMiddleware` (public export, `@experimental`) is the framework's
+native single-agent loop: `should_continue` for rule-based termination,
+`.with_judge(client, criteria=[...])` for a tool-less LLM critic returning
+`JudgeVerdict(answered, reasoning)`. Gotcha worth knowing before designing
+around it: `max_iterations` short-circuits **before** `should_continue`
+(`_harness/_loop.py`), so on the capped pass the judge is never consulted.
+
+Naming warning: `05-end-to-end/evaluation/self_reflection/` is a
+*self-reflection* sample that cites the *Reflexion* paper. Upstream uses the
+two terms interchangeably; this repo does not - see the README section
+contrasting them.
+
+Two caveats when lifting sample code: samples nearly always use
+`FoundryChatClient` + `AzureCliCredential`, so swap in a no-arg
+`OllamaChatClient()` and keep the shape; and none of them pin `num_ctx`,
+which everything here must, or Ollama silently truncates.
+
 ## Rules and gotchas
 
 - `review.py` must NOT use `from __future__ import annotations`:

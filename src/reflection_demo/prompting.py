@@ -26,8 +26,9 @@ def render_worker_prompt(*, topic: str, max_passes: int) -> str:
 def render_judge_instructions(*, topic: str) -> str:
     """Render the judge's system instructions.
 
-    The rubric is deliberately identical to the reflexion reviewer's. If the
-    two critics were given different standards the A/B would confound two
-    variables; only the evidence channel may differ.
+    Coverage and Actionability are identical to the reflexion reviewer's.
+    Accuracy is necessarily weaker: the judge has no corpus access and
+    cannot verify that claims match their sources. This asymmetry is
+    the documented difference the demo exists to demonstrate.
     """
     return _ENV.get_template("judge.md").render(topic=topic).strip()

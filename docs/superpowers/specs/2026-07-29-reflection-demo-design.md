@@ -117,10 +117,12 @@ README documents `with_judge` as the one-liner this expands to.
 
 ### Rubric parity
 
-The judge's rubric is deliberately **identical** to the reviewer's —
-accuracy, coverage, actionability — rendered from `prompts/judge.md`. If the
-two critics were also given different standards, the A/B would confound two
-variables and prove nothing. Only the evidence channel differs.
+The judge's rubric is **identical to the reviewer's on Coverage and
+Actionability**; Accuracy is necessarily weaker because the judge has no
+corpus access and cannot verify that claims match their sources. If the two
+critics were also given different standards on those two dimensions, the A/B
+would confound two variables and prove nothing. This documented asymmetry in
+Accuracy is the distinction the demo exists to demonstrate.
 
 ## 4. Information asymmetry
 

@@ -46,6 +46,9 @@ def read_verdict(value, text) -> tuple:
         return value.answered, value.reasoning
     raw = (text or "").strip()
     upper = raw.upper()
+    # No DONE marker and no MORE marker both take the else branch and land on
+    # False - ambiguous or marker-less replies are MORE, per the fail-OPEN
+    # policy above.
     answered = False if JUDGE_VERDICT_MORE in upper else JUDGE_VERDICT_DONE in upper
     return answered, raw
 
@@ -63,6 +66,11 @@ def summarize(verdicts, max_passes: int) -> tuple:
         verdicts: Every verdict recorded this run, in pass order.
         max_passes: The ``--max-passes`` cap the loop was built with.
     """
+    # The "checks the cap before the judge" premise this function relies on
+    # is pinned by tests/test_reflection_loop.py::
+    # test_max_iterations_short_circuits_before_the_judge, so a framework
+    # upgrade that changes the check order fails loudly here, not silently
+    # in this arithmetic.
     if verdicts and verdicts[-1].answered:
         return "answered", len(verdicts)
     return "unjudged", max_passes
@@ -156,9 +164,17 @@ def make_judge_predicate(judge_client, instructions: str, log: RunLog, num_ctx: 
                 "Evaluate the agent's work. The user's original request follows:"]),
             *original_messages,
             Message("user", contents=["The agent's latest response was:"]),
+            # .text, NOT *last_result.messages - see the docstring above for
+            # why: splatting the raw message list (as the framework's own
+            # with_judge does) hands the judge tool_result content (the
+            # corpus, verbatim) and reasoning traces that can quote it too.
+            # .text filters to TextContent only, which is the whole point.
             Message("assistant", contents=[last_result.text or "(no reply)"]),
             Message("user", contents=["Has the original request been fully addressed?"]),
         ]
+        # num_ctx passed per call, not via Agent's default_options - the judge
+        # is a bare client with no Agent wrapper to carry that option, and
+        # without it Ollama truncates silently instead of erroring.
         response = await judge_client.get_response(
             messages, options={"response_format": JudgeVerdict, "num_ctx": num_ctx})
         answered, reasoning = read_verdict(response.value, response.text)

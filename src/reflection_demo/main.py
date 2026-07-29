@@ -91,6 +91,9 @@ def persist_fallback(result, report_path: Path, flag) -> None:
     if flag.written:
         return
     texts = [(m.text or "").strip() for m in result.messages if m.role == "assistant"]
+    # key=len, not the last element - the model tends to answer the loop's
+    # follow-up nudge with filler ("Done.") after already writing the real
+    # report as plain chat text on an earlier pass, so "latest" would clobber it.
     atomic_write(report_path, max(texts, key=len, default="") or "(no report produced)")
     print("  [worker] write_report never called - persisted the longest reply instead")
 
@@ -118,6 +121,18 @@ def build_agent(corpus_root: Path, report_path: Path, judge_instructions: str,
     from agent_framework.ollama import OllamaChatClient
 
     write_report, flag = make_report_tools(report_path)
+    # No warnings.filterwarnings/catch_warnings here - AgentLoopMiddleware is
+    # @experimental and warns on construction, and that warning is left to
+    # reach the reader on purpose (see the docstring above).
+    #
+    # No fresh_context=True passed either: the default False means every
+    # pass of this loop keeps accumulating onto the same conversation, which
+    # is the "grounded on its own chat history" half of the reflection vs.
+    # reflexion contrast. Its absence here IS the decision.
+    #
+    # judge_client is a bare OllamaChatClient with no tools/session/middleware
+    # of its own - contrast with the worker Agent below, whose tools are
+    # byte-for-byte the reflexion worker's. That asymmetry is the demo.
     loop = AgentLoopMiddleware(
         make_judge_predicate(OllamaChatClient(), judge_instructions, log, resolve_num_ctx()),
         max_iterations=max_passes,

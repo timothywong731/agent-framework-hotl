@@ -106,4 +106,7 @@ def make_report_tools(report_path: Path) -> tuple:
         flag.written = True
         return f"Report saved ({len(markdown)} chars)."
 
+    # 2-tuple, where reflexion_demo's make_report_tools returns a 3-tuple
+    # (write_report, read_report, flag): nothing in this demo reads the
+    # report back, since the judge is never given it.
     return write_report, flag

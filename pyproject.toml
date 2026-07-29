@@ -15,11 +15,13 @@ dependencies = [
 [project.scripts]
 demo = "hotl_demo.main:run"
 reflexion = "reflexion_demo.main:run"
+reflection = "reflection_demo.main:run"
 
 [tool.poetry]
 packages = [
     { include = "hotl_demo", from = "src" },
     { include = "reflexion_demo", from = "src" },
+    { include = "reflection_demo", from = "src" },
 ]
 
 [tool.poetry.group.dev.dependencies]

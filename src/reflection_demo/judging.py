@@ -8,7 +8,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from agent_framework import JudgeVerdict
+from agent_framework import JudgeVerdict, Message
 
 # The framework's own fallback markers, reused verbatim so a judge that
 # cannot honour response_format still lands on the same contract.
@@ -102,3 +102,67 @@ class RunLog:
     def _append(self, record: dict) -> None:
         with self._path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
+
+
+def make_judge_predicate(judge_client, instructions: str, log: RunLog):
+    """Build the ``should_continue`` predicate for ``AgentLoopMiddleware``.
+
+    Mirrors the framework's own ``_build_judge_condition`` - same message
+    layout, same ``JudgeVerdict`` schema, same marker fallback - but records
+    every verdict, which ``AgentLoopMiddleware.with_judge`` cannot: it builds
+    its predicate internally, so an approving verdict's reasoning would be
+    unobservable and the A/B would lose its most interesting line.
+
+    The judge is a bare chat client: no tools, no session, no middleware, no
+    corpus. It sees the original request and what the worker SAID, never the
+    report file. That asymmetry is the reflection pattern.
+
+    Args:
+        judge_client: Any chat client exposing ``get_response``.
+        instructions: Rendered judge system instructions.
+        log: The run log; every verdict is recorded before returning.
+
+    Returns:
+        An async predicate returning ``(keep_going, feedback)``.
+    """
+    async def should_continue(*, iteration, last_result, original_messages, **kwargs):
+        messages = [
+            Message("system", contents=[instructions]),
+            Message("user", contents=[
+                "Evaluate the agent's work. The user's original request follows:"]),
+            *original_messages,
+            Message("user", contents=["The agent's latest response was:"]),
+            *last_result.messages,
+            Message("user", contents=["Has the original request been fully addressed?"]),
+        ]
+        response = await judge_client.get_response(
+            messages, options={"response_format": JudgeVerdict})
+        answered, reasoning = read_verdict(response.value, response.text)
+        log.record(Verdict(pass_no=iteration, answered=answered, reasoning=reasoning))
+        print(f"  [judge] pass {iteration}: {'ANSWERED' if answered else 'MORE WORK'}")
+        if not answered and reasoning:
+            print(f"  [judge] {reasoning}")
+        return (not answered), (reasoning or None)
+
+    return should_continue
+
+
+def make_next_message():
+    """Build the ``next_message`` callable that relays the judge's reasoning.
+
+    ``AgentLoopMiddleware``'s default next-message is a bare "continue"
+    nudge that would drop the feedback on the floor; ``with_judge`` supplies
+    its own relay, and since this demo builds the loop directly it must
+    supply one too. This is the verbal-feedback channel: without it the
+    judge could reject forever without ever saying why.
+    """
+    def next_message(*, feedback=None, **kwargs) -> str:
+        if feedback:
+            return ("A reviewer judged your previous report incomplete.\n\n"
+                    f"Reviewer feedback: {feedback}\n\n"
+                    "Revise the report to address it and save the COMPLETE "
+                    "revised report with write_report.")
+        return ("Keep improving the report and save the complete text with "
+                "write_report.")
+
+    return next_message

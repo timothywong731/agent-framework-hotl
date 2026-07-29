@@ -76,7 +76,8 @@ agent = Agent(
     instructions=_WORKER_INSTRUCTIONS,
     tools=make_corpus_tools(corpus_root) + [write_report],
     middleware=[AgentLoopMiddleware(
-        should_continue=make_judge_predicate(OllamaChatClient(), log),
+        should_continue=make_judge_predicate(
+            OllamaChatClient(), judge_instructions, log, resolve_num_ctx()),
         max_iterations=args.max_passes,
         next_message=make_next_message(),
     )],
@@ -89,6 +90,11 @@ await agent.run(render_worker_prompt(topic=args.topic))
 prior conversation, which is precisely "grounded on its own chat history" —
 the property that distinguishes reflection from reflexion's fresh
 `AgentSession` per cycle.
+
+The judge's `OllamaChatClient()` is bare — it bypasses `Agent` by design, so
+`default_options` (an `Agent`-level mechanism) never reaches it; `num_ctx`
+is instead pinned per call inside `make_judge_predicate`, the same
+`options={...}` route `hotl_demo/compaction.py` uses for its bare client.
 
 `AgentLoopMiddleware` is decorated `@experimental` and emits one
 `ExperimentalWarning` on construction. It is **not** filtered: a demo that
@@ -111,9 +117,10 @@ stopped before the cap", and the approving verdict's reasoning — the single
 most interesting line in an A/B run — would be lost.
 
 `make_judge_predicate` is ~20 lines making the identical call
-(`judge_client.get_response(msgs, options={"response_format": JudgeVerdict})`)
-against the same public `JudgeVerdict` schema, and logs every verdict. The
-README documents `with_judge` as the one-liner this expands to.
+(`judge_client.get_response(msgs, options={"response_format": JudgeVerdict,
+"num_ctx": num_ctx})`) against the same public `JudgeVerdict` schema, and
+logs every verdict. The README documents `with_judge` as the one-liner this
+expands to.
 
 ### Rubric parity
 

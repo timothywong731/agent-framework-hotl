@@ -119,7 +119,7 @@ def build_agent(corpus_root: Path, report_path: Path, judge_instructions: str,
 
     write_report, flag = make_report_tools(report_path)
     loop = AgentLoopMiddleware(
-        make_judge_predicate(OllamaChatClient(), judge_instructions, log),
+        make_judge_predicate(OllamaChatClient(), judge_instructions, log, resolve_num_ctx()),
         max_iterations=max_passes,
         next_message=make_next_message(),
     )

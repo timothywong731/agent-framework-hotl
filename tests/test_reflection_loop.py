@@ -34,7 +34,7 @@ def _result(text):
 async def test_predicate_stops_on_an_answered_verdict(tmp_path):
     client = FakeJudgeClient(FakeChatResponse(JudgeVerdict(answered=True, reasoning="good")))
     log = RunLog(tmp_path / "log.jsonl")
-    predicate = make_judge_predicate(client, "judge instructions", log)
+    predicate = make_judge_predicate(client, "judge instructions", log, 4096)
 
     keep_going, feedback = await predicate(
         iteration=1, last_result=_result("the report"),
@@ -49,7 +49,7 @@ async def test_predicate_continues_and_relays_reasoning(tmp_path):
     client = FakeJudgeClient(
         FakeChatResponse(JudgeVerdict(answered=False, reasoning="no Azure mandate")))
     log = RunLog(tmp_path / "log.jsonl")
-    predicate = make_judge_predicate(client, "judge instructions", log)
+    predicate = make_judge_predicate(client, "judge instructions", log, 4096)
 
     keep_going, feedback = await predicate(
         iteration=2, last_result=_result("draft"),
@@ -63,17 +63,17 @@ async def test_predicate_continues_and_relays_reasoning(tmp_path):
 async def test_predicate_asks_for_structured_output(tmp_path):
     client = FakeJudgeClient(FakeChatResponse(JudgeVerdict(answered=True)))
     predicate = make_judge_predicate(client, "judge instructions",
-                                     RunLog(tmp_path / "log.jsonl"))
+                                     RunLog(tmp_path / "log.jsonl"), 4096)
     await predicate(iteration=1, last_result=_result("r"),
                     original_messages=[Message("user", contents=["t"])])
-    assert client.calls[0]["options"] == {"response_format": JudgeVerdict}
+    assert client.calls[0]["options"] == {"response_format": JudgeVerdict, "num_ctx": 4096}
 
 
 async def test_judge_sees_the_reply_not_the_report_file(tmp_path):
     """Information asymmetry: the judge is handed the transcript only."""
     client = FakeJudgeClient(FakeChatResponse(JudgeVerdict(answered=True)))
     predicate = make_judge_predicate(client, "JUDGE-INSTRUCTIONS",
-                                     RunLog(tmp_path / "log.jsonl"))
+                                     RunLog(tmp_path / "log.jsonl"), 4096)
     await predicate(iteration=1, last_result=_result("WHAT-THE-AGENT-SAID"),
                     original_messages=[Message("user", contents=["THE-TOPIC"])])
 
@@ -99,7 +99,7 @@ async def test_judge_never_sees_tool_results_or_reasoning_traces(tmp_path):
     """
     client = FakeJudgeClient(FakeChatResponse(JudgeVerdict(answered=True)))
     predicate = make_judge_predicate(client, "judge instructions",
-                                     RunLog(tmp_path / "log.jsonl"))
+                                     RunLog(tmp_path / "log.jsonl"), 4096)
     secret = "ZZTOPSECRETCORPUSMARKER42"
     tool_result = Content.from_function_result("call-1", result=f"The migration standard says: {secret}")
     last_result = AgentResponse(messages=[
@@ -121,7 +121,7 @@ async def test_judge_never_sees_tool_results_or_reasoning_traces(tmp_path):
 async def test_predicate_falls_back_to_markers(tmp_path):
     client = FakeJudgeClient(FakeChatResponse(None, "all good\nVERDICT: DONE"))
     log = RunLog(tmp_path / "log.jsonl")
-    predicate = make_judge_predicate(client, "i", log)
+    predicate = make_judge_predicate(client, "i", log, 4096)
     keep_going, _ = await predicate(iteration=1, last_result=_result("r"),
                                     original_messages=[Message("user", contents=["t"])])
     assert keep_going is False

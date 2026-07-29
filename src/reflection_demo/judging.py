@@ -104,7 +104,7 @@ class RunLog:
             f.write(json.dumps(record) + "\n")
 
 
-def make_judge_predicate(judge_client, instructions: str, log: RunLog):
+def make_judge_predicate(judge_client, instructions: str, log: RunLog, num_ctx: int):
     """Build the ``should_continue`` predicate for ``AgentLoopMiddleware``.
 
     Follows the framework's own ``_build_judge_condition`` layout - same
@@ -131,10 +131,20 @@ def make_judge_predicate(judge_client, instructions: str, log: RunLog):
     only), never the report file and never raw tool output. That asymmetry
     is the reflection pattern.
 
+    The judge bypasses ``Agent`` entirely (it is a bare chat client by
+    design), so ``Agent``'s ``default_options={"num_ctx": ...}`` mechanism
+    never reaches it. Without an explicit per-call ``num_ctx`` here, Ollama
+    silently truncates the judge's context - and since ``fresh_context`` is
+    ``False`` the transcript it's asked to judge only grows, so a late pass
+    is exactly where a silent truncation would bite: the judge would verdict
+    a report it only partially saw, with no error raised anywhere.
+
     Args:
         judge_client: Any chat client exposing ``get_response``.
         instructions: Rendered judge system instructions.
         log: The run log; every verdict is recorded before returning.
+        num_ctx: Ollama context window, pinned per call since this client
+            has no ``default_options`` of its own.
 
     Returns:
         An async predicate returning ``(keep_going, feedback)``.
@@ -150,7 +160,7 @@ def make_judge_predicate(judge_client, instructions: str, log: RunLog):
             Message("user", contents=["Has the original request been fully addressed?"]),
         ]
         response = await judge_client.get_response(
-            messages, options={"response_format": JudgeVerdict})
+            messages, options={"response_format": JudgeVerdict, "num_ctx": num_ctx})
         answered, reasoning = read_verdict(response.value, response.text)
         log.record(Verdict(pass_no=iteration, answered=answered, reasoning=reasoning))
         print(f"  [judge] pass {iteration}: {'ANSWERED' if answered else 'MORE WORK'}")

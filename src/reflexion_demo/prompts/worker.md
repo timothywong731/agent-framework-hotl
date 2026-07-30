@@ -18,6 +18,9 @@ independent reviewer.
 Revise the report to address every point of the feedback. Re-check the
 corpus with your list_files and read_file tools where the feedback demands
 new evidence.
+You have a limited number of tool calls. The last few are announced in the
+tool results, and when the budget is spent your exploration tools close and
+you write from what you have.
 {% elif mode == "finalize" %}
 
 ## Reviewer feedback on your last draft

@@ -22,6 +22,7 @@ def test_revision_variant_carries_feedback_and_previous_report():
     assert "Missing the Azure mandate conflict." in text
     assert "# Draft 1 with {braces}" in text   # Jinja2 leaves literal braces alone
     assert "REJECTED" in text
+    assert "limited number of tool calls" in text  # coached same as the initial turn
 
 
 def test_finalize_variant_says_tools_are_gone():
@@ -33,6 +34,7 @@ def test_finalize_variant_says_tools_are_gone():
     assert "exploration tools have been removed" in text
     assert "# Draft 3" in text
     assert "read_file" not in text        # must not tell it to explore
+    assert "limited number of tool calls" not in text  # no read tools to budget
 
 
 def test_unknown_mode_raises():

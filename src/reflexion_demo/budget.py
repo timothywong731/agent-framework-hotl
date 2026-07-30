@@ -15,11 +15,20 @@ from agent_framework import FunctionInvocationContext, function_middleware
 
 BUDGETED_TOOL_NAMES = frozenset({"list_files", "read_file", "read_report"})
 
-BUDGET_NUDGE = (
-    "[SYSTEM] Tool budget exhausted - you have been reasoning for a long "
-    "time. Your exploration tools have been removed. Produce the report now "
-    "from the information you already have."
-)
+# Byte-identical to reflection_demo/budget.py's. Both workers are coached the
+# same so the A/B between the demos differs only in the critic; coaching one
+# of them better would be a confound. Enforced by
+# tests/test_budget_wording_parity.py.
+COUNTDOWN = {
+    3: "3 tool calls left. Decide now which gaps matter most and spend them there.",
+    2: "2 tool calls left.",
+    1: "1 tool call left - your last. Spend it on the single most important gap, then write.",
+}
+
+BUDGET_SPENT = ("Exploration is closed. You have what you need - write the "
+                "complete report now with write_report.")
+
+_PREFIX = "[budget] "
 
 
 @dataclass
@@ -32,6 +41,12 @@ class ToolBudget:
     @property
     def exhausted(self) -> bool:
         return self.spent >= self.max_calls
+
+    @property
+    def remaining(self) -> int:
+        """Calls left this turn, clamped - ``spent`` can pass ``max_calls``
+        when a re-armed run pushes it past (see the middleware's note)."""
+        return max(0, self.max_calls - self.spent)
 
 
 def make_budget_middleware(budget: ToolBudget, budgeted, label: str):
@@ -50,6 +65,11 @@ def make_budget_middleware(budget: ToolBudget, budgeted, label: str):
             return
         budget.spent += 1
         if budget.spent < budget.max_calls:
+            # Anticipatory coaching: warn while there is still runway to
+            # re-plan, rather than only after the tools are gone.
+            line = COUNTDOWN.get(budget.remaining)
+            if line:
+                context.result = f"{context.result or ''}\n\n{_PREFIX}{line}"
             return
         # >= not ==: both executors make two run() calls on one budget, and
         # the framework rebuilds the live tool list per run, so a strip does
@@ -63,7 +83,7 @@ def make_budget_middleware(budget: ToolBudget, budgeted, label: str):
             # Names not present are ignored by the framework, so passing
             # the whole budgeted set is safe for both agents.
             context.remove_tools(sorted(budgeted))
-        context.result = f"{context.result or ''}\n\n{BUDGET_NUDGE}"
-        print(f"  [{label}] tool budget exhausted ({budget.max_calls} calls) - read tools stripped")
+        context.result = f"{context.result or ''}\n\n{_PREFIX}{BUDGET_SPENT}"
+        print(f"  [{label}] exploration closed ({budget.max_calls} calls) - read tools stripped")
 
     return budget_middleware

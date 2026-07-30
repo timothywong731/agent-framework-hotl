@@ -40,6 +40,9 @@ def read_verdict(value, text) -> tuple:
 
     Args:
         value: ``ChatResponse.value`` - a ``JudgeVerdict`` or anything else.
+            Callers must read that property inside a ``try``: it parses
+            lazily and raises on a non-conforming reply, so the caller
+            normalizes the raise to ``None`` before getting here.
         text: ``ChatResponse.text`` - the raw reply, used for the fallback.
     """
     if isinstance(value, JudgeVerdict):
@@ -177,7 +180,23 @@ def make_judge_predicate(judge_client, instructions: str, log: RunLog, num_ctx: 
         # without it Ollama truncates silently instead of erroring.
         response = await judge_client.get_response(
             messages, options={"response_format": JudgeVerdict, "num_ctx": num_ctx})
-        answered, reasoning = read_verdict(response.value, response.text)
+        # ChatResponse.value parses LAZILY: with response_format set it runs
+        # JudgeVerdict.model_validate_json(text) on first access and RAISES
+        # pydantic's ValidationError on any non-empty reply that is not
+        # schema-conforming JSON - i.e. on exactly the input the VERDICT:
+        # marker fallback below exists to handle. Unguarded, that exception
+        # escapes should_continue -> _evaluate_stop -> agent.run() and kills
+        # the run before persist_fallback and log.finish, so there is no
+        # report and no outcome line. The framework's own
+        # _build_judge_condition has the identical exposure, so a local model
+        # that ignores response_format would crash MAF's built-in judge loop
+        # too - the guard is here, not upstream. ValidationError subclasses
+        # ValueError in pydantic v2, so no extra import is needed.
+        try:
+            value = response.value
+        except ValueError:
+            value = None  # unparseable -> fall through to the VERDICT: markers
+        answered, reasoning = read_verdict(value, response.text)
         log.record(Verdict(pass_no=iteration, answered=answered, reasoning=reasoning))
         print(f"  [judge] pass {iteration}: {'ANSWERED' if answered else 'MORE WORK'}")
         if not answered and reasoning:

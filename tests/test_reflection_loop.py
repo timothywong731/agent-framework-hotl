@@ -3,8 +3,9 @@
 Also guards the framework behaviour the terminal semantics depend on:
 ``max_iterations`` short-circuits before ``should_continue``.
 """
-import pytest
-from agent_framework import AgentResponse, Content, JudgeVerdict, Message
+import json
+
+from agent_framework import AgentResponse, ChatResponse, Content, JudgeVerdict, Message
 
 from reflection_demo.judging import RunLog, make_judge_predicate, make_next_message
 
@@ -13,6 +14,28 @@ class FakeChatResponse:
     def __init__(self, value=None, text=""):
         self.value = value
         self.text = text
+
+
+class UnparseableChatResponse:
+    """A reply whose ``value`` RAISES, as the real ``ChatResponse`` does.
+
+    ``ChatResponse.value`` is a lazily-parsing property: with
+    ``response_format=JudgeVerdict`` it calls ``model_validate_json`` on first
+    access and raises ``pydantic.ValidationError`` for any non-empty reply
+    that is not schema-conforming JSON. ``FakeChatResponse`` sets ``value`` as
+    a plain attribute and so is structurally incapable of raising - which is
+    why the marker-fallback tests passed while the production path crashed.
+    """
+
+    def __init__(self, text):
+        self.text = text
+
+    @property
+    def value(self):
+        # Delegate to the real type so the exception is exactly what
+        # production raises, not a hand-rolled stand-in that could drift.
+        return ChatResponse(messages=[Message("assistant", contents=[self.text])],
+                            response_format=JudgeVerdict).value
 
 
 class FakeJudgeClient:
@@ -102,8 +125,13 @@ async def test_judge_never_sees_tool_results_or_reasoning_traces(tmp_path):
                                      RunLog(tmp_path / "log.jsonl"), 4096)
     secret = "ZZTOPSECRETCORPUSMARKER42"
     tool_result = Content.from_function_result("call-1", result=f"The migration standard says: {secret}")
+    # The framework emits a function_result under role="tool", NOT under the
+    # assistant message - so a fixture that hides it in an assistant message
+    # would still satisfy "exactly one assistant message" post-splat and
+    # could not catch a reintroduced leak. This mirrors the real layout:
+    # assistant text + a separate tool message carrying the raw output.
     last_result = AgentResponse(messages=[
-        Message("assistant", contents=[tool_result]),
+        Message("tool", contents=[tool_result]),
         Message("assistant", contents=["Yes, it mentions a standard."]),
     ])
 
@@ -114,8 +142,60 @@ async def test_judge_never_sees_tool_results_or_reasoning_traces(tmp_path):
     assistant_messages = [m for m in sent if m.role == "assistant"]
     assert len(assistant_messages) == 1
     assert assistant_messages[0].text == last_result.text
-    blob = "\n".join(m.text for m in sent)
-    assert secret not in blob
+    # Assert on SERIALIZED content, not on ``m.text``: Message.text already
+    # filters to text content, so a .text-only assertion can never see a
+    # function_result and is vacuous both before and after the fix. The
+    # serialized form is what actually crosses the wire to the judge.
+    assert secret not in json.dumps([m.to_dict() for m in sent], default=str)
+    # Stronger and layout-independent: nothing but plain text may reach the
+    # judge at all, so any future content type (reasoning traces, citations,
+    # attachments) is caught without naming it.
+    assert all(c.type == "text" for m in sent for c in m.contents)
+    # The tool message itself must not be forwarded - role check, since a
+    # tool message whose output happened to be empty would slip past the
+    # content assertions above.
+    assert list(m.role for m in sent) == ["system", "user", "user", "user", "assistant", "user"]
+
+
+async def test_predicate_survives_an_unparseable_structured_reply(tmp_path):
+    """Regression: ``ChatResponse.value`` RAISES on a non-conforming reply.
+
+    Without the ``try/except ValueError`` in the predicate this propagates out
+    of ``should_continue`` -> ``_evaluate_stop`` -> ``agent.run()`` and kills
+    the run before ``persist_fallback`` and ``log.finish`` - no report, no
+    outcome line. It also makes the whole ``VERDICT:`` marker branch
+    unreachable in production, since the raise happens before
+    ``read_verdict`` is ever called.
+    """
+    client = FakeJudgeClient(UnparseableChatResponse("Looks complete.\nVERDICT: DONE"))
+    log = RunLog(tmp_path / "log.jsonl")
+    predicate = make_judge_predicate(client, "i", log, 4096)
+
+    keep_going, feedback = await predicate(
+        iteration=1, last_result=_result("r"),
+        original_messages=[Message("user", contents=["t"])])
+
+    # Fell through to the markers instead of propagating, and still recorded.
+    assert keep_going is False
+    assert log.verdicts[0].answered is True
+    assert "VERDICT: DONE" in feedback
+
+
+async def test_predicate_fails_open_on_an_unparseable_marker_less_reply(tmp_path):
+    """The other half of the guard: no markers either -> keep looping.
+
+    Pins the fail-OPEN direction on the path that actually happens in
+    production (a raising ``value``), not just on the synthetic ``value=None``.
+    """
+    client = FakeJudgeClient(UnparseableChatResponse("I am not sure, honestly."))
+    log = RunLog(tmp_path / "log.jsonl")
+    predicate = make_judge_predicate(client, "i", log, 4096)
+
+    keep_going, _ = await predicate(iteration=1, last_result=_result("r"),
+                                    original_messages=[Message("user", contents=["t"])])
+
+    assert keep_going is True
+    assert log.verdicts[0].answered is False
 
 
 async def test_predicate_falls_back_to_markers(tmp_path):

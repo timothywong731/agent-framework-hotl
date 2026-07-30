@@ -12,5 +12,6 @@ Explore economically: read what you need and no more. There is no tool
 budget here, but a bloated transcript crowds out the report.
 
 Deliver the COMPLETE report in markdown by calling the write_report tool
-with the full text. A reviewer will read your reply and may send it back
-for another pass - there are at most {{ max_passes }} passes.
+with the full text. The tool call is the only thing that saves the report;
+report text left in your reply is not stored anywhere. A reviewer may send
+the work back for another pass - there are at most {{ max_passes }} passes.

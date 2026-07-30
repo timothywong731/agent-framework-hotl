@@ -234,16 +234,39 @@ def make_judge_predicate(judge_client, instructions: str, log: RunLog, num_ctx: 
     return should_continue
 
 
-def make_next_message():
-    """Build the ``next_message`` callable that relays the judge's reasoning.
+def make_next_message(budget, max_passes: int, finalize_message: str):
+    """Build the ``next_message`` callable: feedback relay plus pass boundary.
 
-    ``AgentLoopMiddleware``'s default next-message is a bare "continue"
-    nudge that would drop the feedback on the floor; ``with_judge`` supplies
-    its own relay, and since this demo builds the loop directly it must
-    supply one too. This is the verbal-feedback channel: without it the
-    judge could reject forever without ever saying why.
+    Two jobs, in one place because ``AgentLoopMiddleware`` calls this exactly
+    once between passes and nothing else marks that boundary:
+
+    1. **The verbal-feedback channel.** The middleware's default next-message
+       is a bare "continue" nudge that would drop the judge's reasoning on the
+       floor; without this relay the judge could reject forever without ever
+       saying why.
+    2. **Starting the next pass.** The tool budget is per pass, but every pass
+       runs inside one ``agent.run()``, so there is no turn boundary at which
+       a fresh counter could be minted. ``budget`` is duck-typed - only
+       ``start_pass`` is ever called - so this module needs no import from
+       ``budget.py``.
+
+    On the boundary into the LAST pass the judge's feedback is replaced by the
+    finalize instruction and the pass is marked finalizing, which makes the
+    middleware close exploration after that pass's first tool call.
+    ``iteration`` counts completed passes, so ``iteration == max_passes - 1``
+    is the boundary into pass ``max_passes``.
+
+    Args:
+        budget: Anything with ``start_pass(*, finalizing: bool)``.
+        max_passes: The loop cap, to recognise the final boundary.
+        finalize_message: Pre-rendered final-pass instruction (see
+            ``prompting.render_finalize_message``).
     """
-    def next_message(*, feedback=None, **kwargs) -> str:
+    def next_message(*, iteration, feedback=None, **kwargs) -> str:
+        finalizing = iteration == max_passes - 1
+        budget.start_pass(finalizing=finalizing)
+        if finalizing:
+            return finalize_message
         if feedback:
             return ("A reviewer judged your previous report incomplete.\n\n"
                     f"Reviewer feedback: {feedback}\n\n"

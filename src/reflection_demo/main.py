@@ -16,8 +16,9 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from .budget import BUDGETED_TOOL_NAMES, PassBudget, make_budget_middleware
 from .judging import RunLog, make_judge_predicate, make_next_message
-from .prompting import render_judge_instructions, render_worker_prompt
+from .prompting import render_finalize_message, render_judge_instructions, render_worker_prompt
 from .tools import atomic_write, make_corpus_tools, make_report_tools
 
 DEFAULT_MODEL = "gemma4:31b"
@@ -98,8 +99,9 @@ def persist_fallback(result, report_path: Path, flag) -> None:
     print("  [worker] write_report never called - persisted the longest reply instead")
 
 
-def build_agent(corpus_root: Path, report_path: Path, judge_instructions: str,
-                log: RunLog, max_passes: int):
+def build_agent(corpus_root: Path, report_path: Path, topic: str,
+                judge_instructions: str, log: RunLog, max_passes: int,
+                max_tool_calls: int):
     """Build the looping agent and its report-write flag.
 
     The worker's tool set is byte-for-byte the reflexion worker's; the judge
@@ -156,18 +158,28 @@ def build_agent(corpus_root: Path, report_path: Path, judge_instructions: str,
     # judge_client is a bare OllamaChatClient with no tools/session/middleware
     # of its own - contrast with the worker Agent below, whose tools are
     # byte-for-byte the reflexion worker's. That asymmetry is the demo.
+    #
+    # One budget for the run; next_message resets it at each pass boundary.
+    # Pass 1 has no boundary before it, so it starts non-finalizing here -
+    # unless the run is a single pass, in which case that pass IS the last and
+    # must close exploration after its first call, exactly as a capped final
+    # pass would.
+    budget = PassBudget(max_calls=max_tool_calls)
+    budget.start_pass(finalizing=max_passes == 1)
     loop = AgentLoopMiddleware(
         make_judge_predicate(OllamaChatClient(), judge_instructions, log,
                              resolve_num_ctx(), report_path),
         max_iterations=max_passes,
-        next_message=make_next_message(),
+        next_message=make_next_message(
+            budget, max_passes,
+            render_finalize_message(topic=topic, max_passes=max_passes)),
     )
     agent = Agent(
         client=OllamaChatClient(),
         name="worker",
         instructions=_WORKER_INSTRUCTIONS,
         tools=make_corpus_tools(corpus_root) + [write_report],
-        middleware=[loop],
+        middleware=[make_budget_middleware(budget, BUDGETED_TOOL_NAMES, "worker"), loop],
         default_options={"num_ctx": resolve_num_ctx()},
     )
     return agent, flag
@@ -181,6 +193,10 @@ async def _amain() -> None:
     parser.add_argument("--max-passes", type=int, default=3, metavar="N",
                         help="pass budget; the judge is NOT consulted on the capped "
                              "pass, so the report ships unjudged (default: %(default)s)")
+    parser.add_argument("--max-tool-calls", type=int, default=12, metavar="N",
+                        help="per-pass read-tool budget; the last 3 calls are "
+                             "announced and exploration closes when it is spent "
+                             "(default: %(default)s)")
     parser.add_argument("--model", default=os.environ.get("OLLAMA_MODEL", DEFAULT_MODEL),
                         help="Ollama model tag (default: %(default)s)")
     parser.add_argument("--num-ctx", type=int,
@@ -189,6 +205,8 @@ async def _amain() -> None:
     args = parser.parse_args()
     if args.max_passes < 1:
         parser.error("--max-passes must be >= 1")
+    if args.max_tool_calls < 1:
+        parser.error("--max-tool-calls must be >= 1")
     os.environ["OLLAMA_MODEL"] = args.model
     os.environ["OLLAMA_NUM_CTX"] = str(args.num_ctx)
     corpus_root = Path("sample_data")
@@ -202,11 +220,13 @@ async def _amain() -> None:
     log = RunLog(run_dir / LOG_FILENAME)
 
     agent, flag = build_agent(
-        corpus_root, report_path,
-        render_judge_instructions(topic=args.topic), log, args.max_passes)
+        corpus_root, report_path, args.topic,
+        render_judge_instructions(topic=args.topic), log,
+        args.max_passes, args.max_tool_calls)
 
     print(f"Topic: {args.topic}")
-    print(f"Budget: {args.max_passes} passes (the judge holds NO tools)")
+    print(f"Budget: {args.max_passes} passes, {args.max_tool_calls} tool calls "
+          f"per pass (the judge holds NO tools)")
     # One session for the whole run - the same idiom as reflexion's worker,
     # used for the opposite purpose. AgentLoopMiddleware REPLACES
     # context.messages between passes, so without a session pass 2 would see
@@ -218,7 +238,8 @@ async def _amain() -> None:
     # instead of re-sending every prior pass in full.
     session = agent.create_session()
     result = await agent.run(
-        render_worker_prompt(topic=args.topic, max_passes=args.max_passes),
+        render_worker_prompt(topic=args.topic, max_passes=args.max_passes,
+                            max_tool_calls=args.max_tool_calls),
         session=session)
     persist_fallback(result, report_path, flag)
     outcome, passes = log.finish(args.max_passes, report_path)

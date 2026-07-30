@@ -271,15 +271,46 @@ async def test_predicate_falls_back_to_markers(tmp_path):
     assert log.verdicts[0].answered is True
 
 
-def test_next_message_relays_feedback_and_demands_a_save():
-    nxt = make_next_message()
-    out = nxt(feedback="cite the Azure mandate")
+class FakeBudget:
+    """Records start_pass calls; next_message only ever calls that."""
+
+    def __init__(self):
+        self.passes = []
+
+    def start_pass(self, *, finalizing):
+        self.passes.append(finalizing)
+
+
+def test_next_message_relays_feedback_and_starts_a_normal_pass():
+    budget = FakeBudget()
+    nxt = make_next_message(budget, max_passes=3, finalize_message="FINALIZE-TEXT")
+    out = nxt(iteration=1, feedback="cite the Azure mandate")
     assert "cite the Azure mandate" in out
     assert "write_report" in out
+    assert "FINALIZE-TEXT" not in out
+    assert budget.passes == [False]
+
+
+def test_next_message_delivers_finalize_on_the_boundary_into_the_last_pass():
+    """max_passes=3: after pass 2 the next pass is the last one."""
+    budget = FakeBudget()
+    nxt = make_next_message(budget, max_passes=3, finalize_message="FINALIZE-TEXT")
+    out = nxt(iteration=2, feedback="still thin on residency")
+    assert out == "FINALIZE-TEXT"
+    assert budget.passes == [True]
 
 
 def test_next_message_without_feedback_still_asks_for_a_save():
-    assert "write_report" in make_next_message()(feedback=None)
+    budget = FakeBudget()
+    nxt = make_next_message(budget, max_passes=5, finalize_message="F")
+    assert "write_report" in nxt(iteration=1, feedback=None)
+
+
+def test_next_message_finalizes_on_the_boundary_even_with_max_passes_two():
+    budget = FakeBudget()
+    nxt = make_next_message(budget, max_passes=2, finalize_message="FINALIZE-TEXT")
+    assert nxt(iteration=1, feedback="more") == "FINALIZE-TEXT"
+    assert budget.passes == [True]
 
 
 async def test_max_iterations_short_circuits_before_the_judge():

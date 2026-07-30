@@ -34,14 +34,16 @@ async def test_reflection_smoke(tmp_path):
     max_passes = 1
 
     agent, flag = build_agent(
-        corpus, report_path, render_judge_instructions(topic=DEFAULT_TOPIC),
-        log, max_passes)
+        corpus, report_path, DEFAULT_TOPIC,
+        render_judge_instructions(topic=DEFAULT_TOPIC), log,
+        max_passes, max_tool_calls=6)
     # Session attached exactly as main._amain does it - the loop replaces
     # context.messages between passes, so the session is what makes pass N see
     # pass N-1. Immaterial at max_passes=1, but this smoke test is only worth
     # anything if it runs the production path.
     result = await agent.run(
-        render_worker_prompt(topic=DEFAULT_TOPIC, max_passes=max_passes),
+        render_worker_prompt(topic=DEFAULT_TOPIC, max_passes=max_passes,
+                            max_tool_calls=6),
         session=agent.create_session())
     persist_fallback(result, report_path, flag)
     outcome, passes = log.finish(max_passes, report_path)

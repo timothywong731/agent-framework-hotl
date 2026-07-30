@@ -64,12 +64,17 @@ async def test_two_passes_through_the_real_loop(tmp_path, monkeypatch):
 
     report_path = tmp_path / "report.md"
     log = RunLog(tmp_path / "log.jsonl")
+    # 3 is also above the pass-1-to-pass-2 finalize boundary (iteration ==
+    # max_passes - 1): at max_passes=2 that boundary would land on pass 2 and
+    # next_message would deliver the finalize instruction instead of the
+    # judge's feedback, silently testing the wrong path.
     max_passes = 3  # above the 2 passes the judge will allow, so the cap does not fire
-    agent, flag = build_agent(tmp_path, report_path,
-                              render_judge_instructions(topic=TOPIC), log, max_passes)
+    agent, flag = build_agent(tmp_path, report_path, TOPIC,
+                              render_judge_instructions(topic=TOPIC), log,
+                              max_passes, max_tool_calls=6)
 
     session = agent.create_session()
-    prompt = render_worker_prompt(topic=TOPIC, max_passes=max_passes)
+    prompt = render_worker_prompt(topic=TOPIC, max_passes=max_passes, max_tool_calls=6)
     result = await agent.run(prompt, session=session)
 
     worker_calls = [c for c in calls if c["role"] == "worker"]

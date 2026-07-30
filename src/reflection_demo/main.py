@@ -102,8 +102,10 @@ def build_agent(corpus_root: Path, report_path: Path, judge_instructions: str,
                 log: RunLog, max_passes: int):
     """Build the looping agent and its report-write flag.
 
-    The tool set is byte-for-byte the reflexion worker's; the judge is a bare
-    ``OllamaChatClient`` with none of it. That single difference is the demo.
+    The worker's tool set is byte-for-byte the reflexion worker's; the judge
+    is a bare ``OllamaChatClient`` with none of it. The judge is handed the
+    report's text by the predicate (``judging.make_judge_predicate``), so the
+    corpus is the one channel it is denied - the variable changed on purpose.
 
     ``AgentLoopMiddleware`` is ``@experimental`` and warns on construction.
     The warning is deliberately NOT filtered - a demo that hides the
@@ -147,7 +149,8 @@ def build_agent(corpus_root: Path, report_path: Path, judge_instructions: str,
     # of its own - contrast with the worker Agent below, whose tools are
     # byte-for-byte the reflexion worker's. That asymmetry is the demo.
     loop = AgentLoopMiddleware(
-        make_judge_predicate(OllamaChatClient(), judge_instructions, log, resolve_num_ctx()),
+        make_judge_predicate(OllamaChatClient(), judge_instructions, log,
+                             resolve_num_ctx(), report_path),
         max_iterations=max_passes,
         next_message=make_next_message(),
     )

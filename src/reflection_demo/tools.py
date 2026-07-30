@@ -4,8 +4,10 @@ A deliberate copy of ``reflexion_demo/tools.py`` minus ``read_report``:
 demo packages here are standalone and must be readable end to end without
 tracing imports into a sibling (see the design spec, section 9).
 
-Nothing in this demo reads the report file. The judge sees only what the
-worker SAID, never what it wrote - that asymmetry is the pattern.
+No *tool* here reads the report file: the judge is handed the report's text
+by ``judging.make_judge_predicate``, which reads it in plain Python, so the
+judge needs no ``read_report`` and stays tool-less. The corpus is the only
+channel it is denied - that asymmetry is the pattern.
 """
 import os
 from pathlib import Path
@@ -87,7 +89,7 @@ def make_report_tools(report_path: Path) -> tuple:
         report_path: ``output/reflection_<ts>/report.md`` for this run.
 
     Returns:
-        ``(write_report, flag)``. There is no reader - see the module
+        ``(write_report, flag)``. There is no reader *tool* - see the module
         docstring.
     """
     flag = ReportFlag()
@@ -107,6 +109,6 @@ def make_report_tools(report_path: Path) -> tuple:
         return f"Report saved ({len(markdown)} chars)."
 
     # 2-tuple, where reflexion_demo's make_report_tools returns a 3-tuple
-    # (write_report, read_report, flag): nothing in this demo reads the
-    # report back, since the judge is never given it.
+    # (write_report, read_report, flag): no participant here reads the report
+    # back through a tool - the predicate hands the judge its text directly.
     return write_report, flag

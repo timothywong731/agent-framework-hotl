@@ -11,7 +11,7 @@
 Standalone demo of the **reflection mechanism**, built as a deliberate A/B
 foil to `reflexion_demo`: the same corpus, the same default topic, the same
 worker tool *set*, the same report artifact — with **one variable changed on
-purpose**, the critic's access to evidence.
+purpose**, the critic's access to the *sources*.
 
 "On purpose" rather than "only": two further differences fall out of the two
 demos being separate packages, and are recorded rather than glossed because a
@@ -21,11 +21,12 @@ two) and §8 (no second-`agent.run` delivery retry, because re-entering the
 loop would burn a pass).
 
 - `reflexion_demo`: the critic is an `Agent` node in a cyclic graph holding
-  `list_files` / `read_file` / `read_report`. It re-checks the draft against
-  the sources and judges **what was written**.
+  `list_files` / `read_file` / `read_report`. It reads the report itself and
+  re-checks it **against the sources**.
 - `reflection_demo`: the critic is a bare `OllamaChatClient` called directly
-  by `AgentLoopMiddleware`, with no tools, no session, and no corpus. It
-  judges **what the worker said**.
+  by `AgentLoopMiddleware`, with no tools, no session, and no corpus. It is
+  handed the report's text by the predicate and can only judge it **on its
+  own terms**.
 
 Running both on the same topic and diffing `report.md` is the demo. The
 expected result: reflection converges quickly on structure and prose, and
@@ -84,7 +85,8 @@ agent = Agent(
     tools=make_corpus_tools(corpus_root) + [write_report],
     middleware=[AgentLoopMiddleware(
         should_continue=make_judge_predicate(
-            OllamaChatClient(), judge_instructions, log, resolve_num_ctx()),
+            OllamaChatClient(), judge_instructions, log, resolve_num_ctx(),
+            report_path),
         max_iterations=args.max_passes,
         next_message=make_next_message(),
     )],
@@ -129,6 +131,8 @@ The judge's `OllamaChatClient()` is bare — it bypasses `Agent` by design, so
 `default_options` (an `Agent`-level mechanism) never reaches it; `num_ctx`
 is instead pinned per call inside `make_judge_predicate`, the same
 `options={...}` route `hotl_demo/compaction.py` uses for its bare client.
+`report_path` is threaded in for the same reason: the judge has no tool to
+open the report with, so the predicate reads it and hands over the text (§4).
 
 `AgentLoopMiddleware` is decorated `@experimental` and emits one
 `ExperimentalWarning` on construction. It is **not** filtered: a demo that
@@ -171,18 +175,29 @@ Accuracy is the distinction the demo exists to demonstrate.
 |---|---|---|
 | What it is | `Agent` node in a cyclic graph | bare `OllamaChatClient`, called directly |
 | Corpus tools | `list_files`, `read_file` | none |
-| Report access | `read_report` — reads the file off disk | none — the transcript only |
-| Session | fresh `AgentSession` per cycle | none — the predicate rebuilds its prompt from the original request plus the worker's latest text (the *worker* holds the run's one session, §3) |
-| Judges | what was **written** | what the worker **said** |
+| Report access | `read_report` — fetches the file itself | the predicate reads the file and hands over its text |
+| Session | fresh `AgentSession` per cycle | none — the predicate rebuilds its prompt from the original request, the worker's latest text, and the report (the *worker* holds the run's one session, §3) |
+| Judges | the report, **against the sources** | the report, **on its own terms** |
 
-The framework states the first three rows itself, in the docstring of
-`_build_judge_condition`: *"The judge is called directly (no agent tools,
-session, or middleware)."*
+The framework states the tool-, session- and middleware-less shape itself, in
+the docstring of `_build_judge_condition`: *"The judge is called directly (no
+agent tools, session, or middleware)."*
 
-The last row is the mechanism's sharp end. The reflexion reviewer opens
-`report.md`; the reflection judge sees only the agent's response messages.
-A worker that *claims* in conversation to have addressed the Azure mandate
-can satisfy the judge without the report saying anything of the kind.
+**Both critics see the report; only the reflexion reviewer can check it
+against the sources.** That is the single-variable difference, and it is
+deliberately the *only* one: the judge is handed the report's text as prompt
+text by the harness, holding no tool, no session and no middleware to fetch it
+with, so corpus access is all that separates the two critics. It is also what
+makes the reflection judge able to converge at all — the worker delivers
+through `write_report`, so its reply text is an acknowledgement ("the report
+has been written and saved successfully", measured at 87 characters against a
+live model). A judge given only that rates the *claim* rather than the work:
+live 2-pass runs had it reject with *"the agent provided no response and did
+not produce the requested migration report"* while `report.md` held 5635
+bytes, so `answered` was unreachable and every run shipped `unjudged` — one of
+the two documented terminal states never occurred. It is also the arrangement
+the literature uses: in Self-Refine the critic always sees the draft, it
+simply has no ground truth to check it against.
 
 **A finding about the framework itself:** the naive way to build "the
 agent's response messages" - splatting `*last_result.messages` into the
@@ -228,7 +243,8 @@ pass, so a framework upgrade cannot silently change the terminal semantics.
 ## 6. Tools
 
 `tools.py` is a copy of `reflexion_demo/tools.py` minus `read_report` (no
-participant reads the report file in this demo): `make_corpus_tools` gives
+participant reads the report through a *tool* here — the judge predicate reads
+it in plain Python and hands over the text, §4): `make_corpus_tools` gives
 the traversal-guarded `list_files` / `read_file` pair over `sample_data/`;
 `make_report_tools` gives `write_report` plus the `ReportFlag` write-detection
 cell. Same idioms — oversized reads truncated, failures returned as
@@ -265,16 +281,16 @@ Jinja2 markdown under `src/reflection_demo/prompts/`, no YAML frontmatter
   claim in a source file, deliver via `write_report`, explore economically.
 
   It states that the `write_report` call is the **only** thing that saves the
-  report, and it deliberately does **not** tell the worker that the critic
-  reads its chat reply rather than the file. An earlier wording ("a reviewer
-  will read your reply and may send it back") did, and it cut two ways: it
-  pulled the model toward putting the report in chat text instead of calling
-  the tool — the live `--max-passes 1` run hit the longest-reply fallback — and
-  it is an instruction the reflexion worker does not have, so it broke the
-  worker parity §1 claims. Telling the worker the judge is blind would also let
-  it *game* the judge by narrating compliance in chat, which is a different
-  experiment from the one this demo runs.
-- `judge.md` — the judge's system instructions. Carries the same
+  report, and deliberately does **not** describe the critic's channels. An earlier
+  wording ("a reviewer will read your reply and may send it back") did, and it
+  cut two ways: it pulled the model toward putting the report in chat text
+  instead of calling the tool — the live `--max-passes 1` run hit the
+  longest-reply fallback — and it is an instruction the reflexion worker does
+  not have, so it broke the worker parity §1 claims.
+- `judge.md` — the judge's system instructions. Names what the judge is given
+  (the request, the worker's latest reply, the saved report) and what it is
+  not (the sources), and tells it to judge the saved report rather than the
+  agent's description of it. Carries the same
   accuracy / coverage / actionability rubric as the reflexion reviewer (§3),
   plus the `JudgeVerdict` contract and the `VERDICT: DONE` / `VERDICT: MORE`
   marker fallback wording that the framework's default judge prompt uses.
@@ -375,7 +391,9 @@ fakes over mocks — repo rules. No `tests/__init__.py`.
   the loop), `summarize`'s terminal arithmetic, and `RunLog`'s line shapes —
   `unjudged` at the cap, `answered` on early exit.
 - `tests/test_reflection_loop.py` — the predicate itself: what it sends the
-  judge (no tool results, no reasoning traces, no non-text content at all),
+  judge (what the worker said *and* the report's text; no tool results, no
+  reasoning traces, no non-text content at all) including the
+  missing- and empty-report wording,
   the per-call `response_format` / `num_ctx` options, the guard for a
   lazily-raising `ChatResponse.value`, the `next_message` feedback relay, and
   the canary that **the judge is not called on the capped pass** (guards

@@ -54,10 +54,23 @@ def _result(text):
     return AgentResponse(messages=[Message("assistant", contents=[text])])
 
 
+def _report(tmp_path, text=None):
+    """A report path, written only when ``text`` is given.
+
+    An unwritten path is the real state of pass 1 before ``write_report``
+    fires, so it is the honest default for tests that do not care.
+    """
+    path = tmp_path / "report.md"
+    if text is not None:
+        path.write_text(text, encoding="utf-8")
+    return path
+
+
 async def test_predicate_stops_on_an_answered_verdict(tmp_path):
     client = FakeJudgeClient(FakeChatResponse(JudgeVerdict(answered=True, reasoning="good")))
     log = RunLog(tmp_path / "log.jsonl")
-    predicate = make_judge_predicate(client, "judge instructions", log, 4096)
+    predicate = make_judge_predicate(client, "judge instructions", log, 4096,
+                                     _report(tmp_path, "# Report"))
 
     keep_going, feedback = await predicate(
         iteration=1, last_result=_result("the report"),
@@ -72,7 +85,8 @@ async def test_predicate_continues_and_relays_reasoning(tmp_path):
     client = FakeJudgeClient(
         FakeChatResponse(JudgeVerdict(answered=False, reasoning="no Azure mandate")))
     log = RunLog(tmp_path / "log.jsonl")
-    predicate = make_judge_predicate(client, "judge instructions", log, 4096)
+    predicate = make_judge_predicate(client, "judge instructions", log, 4096,
+                                     _report(tmp_path, "# Report"))
 
     keep_going, feedback = await predicate(
         iteration=2, last_result=_result("draft"),
@@ -86,17 +100,25 @@ async def test_predicate_continues_and_relays_reasoning(tmp_path):
 async def test_predicate_asks_for_structured_output(tmp_path):
     client = FakeJudgeClient(FakeChatResponse(JudgeVerdict(answered=True)))
     predicate = make_judge_predicate(client, "judge instructions",
-                                     RunLog(tmp_path / "log.jsonl"), 4096)
+                                     RunLog(tmp_path / "log.jsonl"), 4096,
+                                     _report(tmp_path, "# Report"))
     await predicate(iteration=1, last_result=_result("r"),
                     original_messages=[Message("user", contents=["t"])])
     assert client.calls[0]["options"] == {"response_format": JudgeVerdict, "num_ctx": 4096}
 
 
-async def test_judge_sees_the_reply_not_the_report_file(tmp_path):
-    """Information asymmetry: the judge is handed the transcript only."""
+async def test_judge_sees_what_the_worker_said_and_what_it_wrote(tmp_path):
+    """Both channels reach the judge, and the corpus still does not.
+
+    The worker delivers via ``write_report``, so its reply is only an
+    acknowledgement; judging that alone rated the claim instead of the work
+    and made ``answered`` unreachable. The report is therefore handed over as
+    prompt text - by the harness, with no tool given to the judge.
+    """
     client = FakeJudgeClient(FakeChatResponse(JudgeVerdict(answered=True)))
     predicate = make_judge_predicate(client, "JUDGE-INSTRUCTIONS",
-                                     RunLog(tmp_path / "log.jsonl"), 4096)
+                                     RunLog(tmp_path / "log.jsonl"), 4096,
+                                     _report(tmp_path, "WHAT-THE-AGENT-WROTE"))
     await predicate(iteration=1, last_result=_result("WHAT-THE-AGENT-SAID"),
                     original_messages=[Message("user", contents=["THE-TOPIC"])])
 
@@ -104,8 +126,42 @@ async def test_judge_sees_the_reply_not_the_report_file(tmp_path):
     assert "JUDGE-INSTRUCTIONS" in blob
     assert "THE-TOPIC" in blob
     assert "WHAT-THE-AGENT-SAID" in blob
+    assert "WHAT-THE-AGENT-WROTE" in blob
+    # Labelled, so the judge can tell an acknowledgement from the deliverable.
+    assert "SAID" in blob and "WROTE" in blob
     # No tools were offered to the judge at all.
     assert "tools" not in (client.calls[0]["options"] or {})
+
+
+async def test_judge_is_told_in_words_when_no_report_was_saved(tmp_path):
+    """A pass where ``write_report`` never fired has no file to read.
+
+    The prompt must say so rather than carry a bare empty string - a judge
+    told nothing was delivered should reject, which is the correct verdict -
+    and reading a missing path must not raise.
+    """
+    client = FakeJudgeClient(FakeChatResponse(JudgeVerdict(answered=False, reasoning="none")))
+    predicate = make_judge_predicate(client, "i", RunLog(tmp_path / "log.jsonl"), 4096,
+                                     _report(tmp_path))  # deliberately unwritten
+    keep_going, _ = await predicate(iteration=1, last_result=_result("all done!"),
+                                    original_messages=[Message("user", contents=["t"])])
+
+    assert keep_going is True
+    blob = "\n".join(m.text for m in client.calls[0]["messages"])
+    assert "no report has been saved" in blob
+    assert "report.md" in blob
+
+
+async def test_judge_is_told_in_words_when_the_report_is_empty(tmp_path):
+    """Same branch for a whitespace-only file: an empty artifact is no artifact."""
+    client = FakeJudgeClient(FakeChatResponse(JudgeVerdict(answered=False, reasoning="none")))
+    predicate = make_judge_predicate(client, "i", RunLog(tmp_path / "log.jsonl"), 4096,
+                                     _report(tmp_path, "   \n\n"))
+    await predicate(iteration=1, last_result=_result("all done!"),
+                    original_messages=[Message("user", contents=["t"])])
+
+    assert "no report has been saved" in "\n".join(
+        m.text for m in client.calls[0]["messages"])
 
 
 async def test_judge_never_sees_tool_results_or_reasoning_traces(tmp_path):
@@ -119,10 +175,14 @@ async def test_judge_never_sees_tool_results_or_reasoning_traces(tmp_path):
     actual answer never quotes it. The predicate must forward
     ``last_result.text`` only - exactly one assistant message standing in
     for the whole reply, and no non-text content anywhere in the transcript.
+
+    The report the harness hands over separately is plain text the worker
+    chose to write, not a channel the judge can pull the corpus through.
     """
     client = FakeJudgeClient(FakeChatResponse(JudgeVerdict(answered=True)))
     predicate = make_judge_predicate(client, "judge instructions",
-                                     RunLog(tmp_path / "log.jsonl"), 4096)
+                                     RunLog(tmp_path / "log.jsonl"), 4096,
+                                     _report(tmp_path, "# Draft\n\nIt mentions a standard."))
     secret = "ZZTOPSECRETCORPUSMARKER42"
     tool_result = Content.from_function_result("call-1", result=f"The migration standard says: {secret}")
     # The framework emits a function_result under role="tool", NOT under the
@@ -153,8 +213,11 @@ async def test_judge_never_sees_tool_results_or_reasoning_traces(tmp_path):
     assert all(c.type == "text" for m in sent for c in m.contents)
     # The tool message itself must not be forwarded - role check, since a
     # tool message whose output happened to be empty would slip past the
-    # content assertions above.
-    assert list(m.role for m in sent) == ["system", "user", "user", "user", "assistant", "user"]
+    # content assertions above. The trailing pair is the harness handing over
+    # the report and then asking the question; both are the harness speaking,
+    # hence "user".
+    assert list(m.role for m in sent) == [
+        "system", "user", "user", "user", "assistant", "user", "user"]
 
 
 async def test_predicate_survives_an_unparseable_structured_reply(tmp_path):
@@ -169,7 +232,7 @@ async def test_predicate_survives_an_unparseable_structured_reply(tmp_path):
     """
     client = FakeJudgeClient(UnparseableChatResponse("Looks complete.\nVERDICT: DONE"))
     log = RunLog(tmp_path / "log.jsonl")
-    predicate = make_judge_predicate(client, "i", log, 4096)
+    predicate = make_judge_predicate(client, "i", log, 4096, _report(tmp_path, "# Report"))
 
     keep_going, feedback = await predicate(
         iteration=1, last_result=_result("r"),
@@ -189,7 +252,7 @@ async def test_predicate_fails_open_on_an_unparseable_marker_less_reply(tmp_path
     """
     client = FakeJudgeClient(UnparseableChatResponse("I am not sure, honestly."))
     log = RunLog(tmp_path / "log.jsonl")
-    predicate = make_judge_predicate(client, "i", log, 4096)
+    predicate = make_judge_predicate(client, "i", log, 4096, _report(tmp_path, "# Report"))
 
     keep_going, _ = await predicate(iteration=1, last_result=_result("r"),
                                     original_messages=[Message("user", contents=["t"])])
@@ -201,7 +264,7 @@ async def test_predicate_fails_open_on_an_unparseable_marker_less_reply(tmp_path
 async def test_predicate_falls_back_to_markers(tmp_path):
     client = FakeJudgeClient(FakeChatResponse(None, "all good\nVERDICT: DONE"))
     log = RunLog(tmp_path / "log.jsonl")
-    predicate = make_judge_predicate(client, "i", log, 4096)
+    predicate = make_judge_predicate(client, "i", log, 4096, _report(tmp_path, "# Report"))
     keep_going, _ = await predicate(iteration=1, last_result=_result("r"),
                                     original_messages=[Message("user", contents=["t"])])
     assert keep_going is False

@@ -542,7 +542,8 @@ plus an outcome line, written by plain code, never by the model:
 `poetry run reflection` is the A/B foil to the reflexion demo, and the
 practical half of [Reflexion vs reflection](#reflexion-vs-reflection) above.
 Same corpus, same default topic, same worker tool *set*, same report
-artifact - and one variable changed on purpose: **the critic has no tools**.
+artifact - and one variable changed on purpose: **the critic has no tools and
+cannot reach the sources**. Both critics see the report.
 Two further worker-side differences follow from the two demos being separate
 packages rather than from the experiment; both are named under [Running the
 A/B](#running-the-ab) below.
@@ -550,7 +551,7 @@ A/B](#running-the-ab) below.
 ```mermaid
 flowchart LR
     T(["--topic"]) --> W["worker agent<br>corpus tools + write_report"]
-    W -->|"AgentLoopMiddleware<br>should_continue"| J{"judge<br>bare OllamaChatClient<br>NO tools"}
+    W -->|"AgentLoopMiddleware<br>should_continue<br>(reply text + report.md text)"| J{"judge<br>bare OllamaChatClient<br>NO tools, NO corpus"}
     J -->|"answered: false<br>reasoning relayed verbatim"| W
     J -->|"answered: true"| OK(["report.md ships - answered"])
     W -->|"pass == --max-passes<br>judge never consulted"| UN(["report.md ships - unjudged"])
@@ -607,9 +608,23 @@ than left for a skeptical reader to find:
 |---|---|---|
 | What it is | an `Agent` node in a cyclic graph | a bare `OllamaChatClient`, called directly |
 | Corpus tools | `list_files`, `read_file` | none |
-| Report access | `read_report` - reads the file off disk | none - the transcript only |
-| Judges | what was **written** | what the worker **said** |
+| Report access | `read_report` - fetches the file itself | the predicate reads the file and hands over its text |
+| Judges | the report, **against the sources** | the report, **on its own terms** |
 | Terminal states | `approved` / `forced` (unapproved) | `answered` / `unjudged` |
+
+**Both critics see the report; only the reflexion reviewer can check it
+against the sources.** That is the single-variable difference. The judge is
+still tool-less: the predicate reads `report.md` in plain Python and puts its
+text in the prompt, so the artifact is delivered by the harness and corpus
+access is the one thing the judge is denied. Handing it over is also what
+makes the judge able to converge at all - the worker delivers through
+`write_report`, so its reply text is an acknowledgement ("the report has been
+written and saved successfully"), and a judge shown only that rates the claim
+instead of the work: live runs had it reject *"the agent provided no
+response"* while `report.md` held 5635 bytes, which made `answered`
+unreachable and shipped every run `unjudged`. It matches the literature too -
+in Self-Refine the critic always sees the draft; it just has no ground truth
+to check it against.
 
 The rubric is identical on **Coverage** and **Actionability** - deliberately,
 because giving the two critics different standards on the dimensions they can
@@ -622,9 +637,9 @@ confound - it *is* the finding. A tool-less critic cannot be given the
 grounded rubric, and the closest honest rewording checks presentation where
 the other checks fact.
 
-The framework states the asymmetry itself, in the docstring of its own judge
-builder: *"The judge is called directly (no agent tools, session, or
-middleware)."*
+The framework states the judge's tool-less shape itself, in the docstring of
+its own judge builder: *"The judge is called directly (no agent tools,
+session, or middleware)."*
 
 ### Gotchas worth knowing
 
@@ -685,9 +700,10 @@ corpus text, verbatim) plus `assistant` messages with `text_reasoning`
 traces that can quote it too. The framework's built-in judge is not
 information-isolated: it reads the tool output. Verified against a live
 model with the worker explicitly instructed not to quote the file, and the
-corpus marker still reached the judge twice. This demo passes the judge only
-`last_result.text`, which filters to text content and excludes both
-channels.
+corpus marker still reached the judge twice. This demo passes the judge
+`last_result.text`, which filters to text content and excludes both channels,
+plus the report's text read off disk by the predicate - the harness chooses
+what crosses over, which is what keeps the corpus on this side of it.
 
 ## Prerequisites
 

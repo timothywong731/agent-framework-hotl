@@ -115,7 +115,8 @@ class RunLog:
             f.write(json.dumps(record) + "\n")
 
 
-def make_judge_predicate(judge_client, instructions: str, log: RunLog, num_ctx: int):
+def make_judge_predicate(judge_client, instructions: str, log: RunLog, num_ctx: int,
+                         report_path: Path):
     """Build the ``should_continue`` predicate for ``AgentLoopMiddleware``.
 
     Follows the framework's own ``_build_judge_condition`` layout - same
@@ -138,9 +139,21 @@ def make_judge_predicate(judge_client, instructions: str, log: RunLog, num_ctx: 
     judge, no matter what the worker read.
 
     The judge is a bare chat client: no tools, no session, no middleware, no
-    corpus. It sees the original request and what the worker SAID (text
-    only), never the report file and never raw tool output. That asymmetry
-    is the reflection pattern.
+    corpus. It is shown two things - what the worker SAID
+    (``last_result.text``) and what the worker WROTE (the current contents of
+    the report file). Both are needed: the worker delivers through
+    ``write_report``, so its reply text is only an acknowledgement ("the
+    report has been written and saved successfully"), and a judge given that
+    alone rates the *claim* of having done the work rather than the work. It
+    made ``answered`` effectively unreachable - live runs looped to the cap
+    and shipped ``unjudged`` while ``report.md`` held a full report.
+
+    The report is read here in plain Python and handed over as prompt text:
+    the judge gets no tool, no session and no middleware to fetch it with,
+    so the artifact is delivered BY THE HARNESS, and the judge's only denied
+    channel is the corpus - which is the single variable the A/B against
+    ``reflexion_demo`` turns on. It is also what Self-Refine does: the critic
+    always sees the draft, it just has no ground truth to check it against.
 
     The judge bypasses ``Agent`` entirely (it is a bare chat client by
     design), so ``Agent``'s ``default_options={"num_ctx": ...}`` mechanism
@@ -156,23 +169,38 @@ def make_judge_predicate(judge_client, instructions: str, log: RunLog, num_ctx: 
         log: The run log; every verdict is recorded before returning.
         num_ctx: Ollama context window, pinned per call since this client
             has no ``default_options`` of its own.
+        report_path: The run's ``report.md``. Re-read on every pass, because
+            ``write_report`` overwrites it in place.
 
     Returns:
         An async predicate returning ``(keep_going, feedback)``.
     """
+    report = Path(report_path)
+
     async def should_continue(*, iteration, last_result, original_messages, **kwargs):
+        # No file yet on a pass where write_report never fired. Say so in
+        # words rather than passing an empty string: a judge told nothing was
+        # delivered should reject, and that verdict is correct.
+        written = report.read_text(encoding="utf-8").strip() if report.is_file() else ""
+        delivered = (f"The agent WROTE this into {report.name}:\n\n{written}" if written
+                     else "The agent WROTE nothing: no report has been saved to "
+                          f"{report.name} yet, so there is no deliverable to judge.")
         messages = [
             Message("system", contents=[instructions]),
             Message("user", contents=[
                 "Evaluate the agent's work. The user's original request follows:"]),
             *original_messages,
-            Message("user", contents=["The agent's latest response was:"]),
+            Message("user", contents=["The agent SAID, in its latest reply:"]),
             # .text, NOT *last_result.messages - see the docstring above for
             # why: splatting the raw message list (as the framework's own
             # with_judge does) hands the judge tool_result content (the
             # corpus, verbatim) and reasoning traces that can quote it too.
             # .text filters to TextContent only, which is the whole point.
             Message("assistant", contents=[last_result.text or "(no reply)"]),
+            # Labelled SAID vs WROTE so the judge can tell an acknowledgement
+            # apart from the deliverable; the report arrives as a user message
+            # because it is the harness speaking, not the worker.
+            Message("user", contents=[delivered]),
             Message("user", contents=["Has the original request been fully addressed?"]),
         ]
         # num_ctx passed per call, not via Agent's default_options - the judge

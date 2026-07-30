@@ -113,6 +113,12 @@ async def test_two_passes_through_the_real_loop(tmp_path, monkeypatch):
     assert not judge_calls[0]["options"].get("tools")
     assert worker_calls[0]["options"]["tools"]
 
+    # build_agent threaded report_path into the predicate: the script never
+    # calls write_report, so on real wiring the judge is told in words that
+    # nothing was delivered rather than handed an empty string.
+    judge_1_text = "\n".join(m.text for m in judge_calls[0]["messages"])
+    assert "no report has been saved" in judge_1_text
+
     # write_report was never called by the script, so the fallback persists the
     # longest assistant text across the aggregated two-pass response.
     assert flag.written is False

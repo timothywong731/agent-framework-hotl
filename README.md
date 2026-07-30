@@ -475,12 +475,18 @@ Both budgets finish the same way: tools are taken away and the agent is told
 to produce from what it already has.
 
 - **Per-turn tool budget** (`--max-tool-calls`, default 12). Function
-  middleware counts read-tool calls; the call that exhausts the budget still
-  executes, then the read tools are stripped for the rest of the turn (the
-  framework's live `remove_tools()` mutation point) and the nudge rides on
-  that tool's result: *"you have been reasoning for a long time - produce
-  the report now from the information you already have."* `write_report`
-  survives the strip. Applies to worker and reviewer alike.
+  middleware counts read-tool calls and coaches the worker mid-run rather
+  than only nudging it after the fact: the last three calls are announced
+  with escalating urgency (3, 2, 1 remaining), then the call that exhausts
+  the budget still executes, the read tools are stripped for the rest of the
+  turn (the framework's live `remove_tools()` mutation point), and a closing
+  message rides on that tool's result: *"Exploration is closed. You have
+  what you need - write the complete report now with write_report."*
+  `write_report` survives the strip. Applies to worker and reviewer alike.
+  The countdown and closing wording are byte-identical to the reflection
+  demo's - coaching one worker better than the other would be a confound in
+  the A/B the two demos exist to run - and `tests/test_budget_wording_parity.py`
+  pins the identity.
 - **Review-cycle budget** (`--max-cycles`, default 3). A rejection at the
   last cycle triggers one final worker turn whose agent is *constructed*
   without read tools - then the report ships regardless, logged as forced.
@@ -541,11 +547,12 @@ plus an outcome line, written by plain code, never by the model:
 
 `poetry run reflection` is the A/B foil to the reflexion demo, and the
 practical half of [Reflexion vs reflection](#reflexion-vs-reflection) above.
-Same corpus, same default topic, same worker tool *set*, same report
-artifact - and one variable changed on purpose: **the critic has no tools and
-cannot reach the sources**. Both critics see the report.
-Two further worker-side differences follow from the two demos being separate
-packages rather than from the experiment; both are named under [Running the
+Same corpus, same default topic, same worker tool *set*, same per-pass tool
+budget with the same countdown coaching, same report artifact - and one
+variable changed on purpose: **the critic has no tools and cannot reach the
+sources**. Both critics see the report.
+One further worker-side difference follows from the two demos being separate
+packages rather than from the experiment, and is named under [Running the
 A/B](#running-the-ab) below.
 
 ```mermaid
@@ -562,11 +569,42 @@ one `agent.run()` call, and `AgentLoopMiddleware` driving every pass from
 inside. That absence is the finding - reflexion needs a graph because it has
 two participants, reflection has one.
 
+### The tool budget
+
+`--max-tool-calls` (default 12) bounds each pass the same way reflexion
+bounds each turn (see [Two budgets, one ending](#two-budgets-one-ending)),
+adapted to a loop with no turn boundary: `AgentLoopMiddleware` runs every
+pass inside one `agent.run()`, so there is nowhere to mint a fresh counter
+except between passes. `PassBudget.start_pass()` is called from
+`next_message`, the one hook the loop fires there. The last three calls are
+announced with escalating urgency (3, 2, 1 remaining), then a closing
+message tells the worker it has what it needs and its exploration tools are
+gone - wording byte-identical to reflexion's `ToolBudget`, pinned by
+`tests/test_budget_wording_parity.py`.
+
+The final pass gets a finalize instruction instead of the judge's feedback,
+and closes its tools after its **first** tool call rather than pre-emptively:
+`remove_tools()` is only reachable from inside a tool call, so a worker that
+ignores "do not start new exploration" still gets exactly one more
+exploratory call before the strip fires.
+
+With `--max-tool-calls 3` or lower the countdown fires on the very first
+call of every pass, since one call already leaves 3 or fewer remaining -
+inherent to a tight budget, not a bug.
+
+A live `--max-passes 2 --max-tool-calls 4` run shows the mechanism working
+end to end: the worker's exploration closed after 4 calls, and the judge
+rejected with *"the agent explicitly admits it did not review
+'docs_src/02_enterprise_cloud_strategy.md', leaving gaps regarding corporate
+mandates, data residency, and encryption standards"* - a tight budget cut
+exploration short, and the tool-less judge caught the resulting coverage
+gap.
+
 ### Running the A/B
 
 ```bash
-poetry run reflection --max-passes 3
-poetry run reflexion  --max-cycles 3
+poetry run reflection --max-passes 3 --max-tool-calls 12
+poetry run reflexion  --max-cycles 3 --max-tool-calls 12
 diff output/reflection_<ts>/report.md output/reflexion_<ts>/report.md
 ```
 
@@ -576,21 +614,10 @@ planted corpus conflicts - the enterprise Azure mandate against
 by *both* workers. Only the reflexion reviewer can open the sources and
 check whether the report actually addressed them.
 
-Two worker-side differences remain. Both fall out of the two demos being
-separate packages, not out of the experiment, and both are stated here rather
-than left for a skeptical reader to find:
+One worker-side difference remains. It falls out of the two demos being
+separate packages, not out of the experiment, and is stated here rather than
+left for a skeptical reader to find:
 
-- **Tool budget.** The reflexion worker runs under a 12-call-per-turn budget
-  with mid-turn stripping (see [Two budgets, one
-  ending](#two-budgets-one-ending)); this worker has none, because the strip
-  mechanism is already demonstrated next door and repeating it would force a
-  copy of `budget.py` into a package that must not import from a sibling. The
-  tool *set* is identical, the *bound* is not - and the bound is what caps how
-  much evidence a worker can gather, so this is a real difference, not a
-  cosmetic one. It does not manufacture the expected result, though: it
-  handicaps the *reflexion* side. The reflection worker is the less
-  constrained of the two, so if it still misses the planted conflicts, the
-  finding is stronger rather than weaker.
 - **Delivery retry.** When the model finishes without calling `write_report`,
   reflexion issues a second `agent.run` with an explicit nudge before falling
   back to the longest reply. This demo cannot: a second `agent.run` re-enters

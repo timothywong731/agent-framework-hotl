@@ -132,16 +132,25 @@ Two independent limits, both explicit CLI knobs:
 1. **Tool-call budget** (`--max-tool-calls`, default 12, per agent turn,
    fresh each turn). One function middleware (in `budget.py`) owns a
    counter. Read tools count (`list_files`, `read_file`, `read_report`);
-   `write_report` is exempt — it is delivery, not exploration. On the call
+   `write_report` is exempt — it is delivery, not exploration. Coaching is
+   anticipatory, not only punitive: the three calls before exhaustion (3, 2,
+   1 remaining) each append an escalating countdown line to that call's
+   result, so the model can re-plan while there is still runway — this
+   worker is coached mid-run, not only nudged after the fact. On the call
    that exhausts the budget, the middleware executes that call normally,
    then strips the read tools for the remainder of the turn via
    `FunctionInvocationContext.remove_tools()` (the framework's sanctioned
-   live-mutation point for progressive tool exposure) and appends the nudge
-   to that call's result: *"Tool budget exhausted — you have been reasoning
-   for a long time. Produce the report now from the information you have."*
-   Subsequent model iterations in that turn see only `write_report`
-   (worker) or no tools (reviewer, whose verdict is structured output and
-   needs no tool). Applied to **both** agents — parity again.
+   live-mutation point for progressive tool exposure) and appends a closing
+   message to that call's result: *"Exploration is closed. You have what
+   you need — write the complete report now with write_report."* Subsequent
+   model iterations in that turn see only `write_report` (worker) or no
+   tools (reviewer, whose verdict is structured output and needs no tool).
+   Applied to **both** agents — parity again. The countdown and closing
+   wording are byte-identical to `reflection_demo`'s `budget.py` — coaching
+   one worker better than the other would be a confound in the A/B the two
+   demos exist to run — pinned by `tests/test_budget_wording_parity.py`. See
+   `docs/superpowers/specs/2026-07-30-reflection-tool-budget-design.md` for
+   the full design.
 2. **Review-cycle budget** (`--max-cycles`, default 3). Exhaustion triggers
    the forced-finalize turn (§3): stripping expressed at construction time —
    the finalize agent is built without read tools.

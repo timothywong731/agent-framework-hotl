@@ -23,6 +23,7 @@ poetry run demo --resume output/run_<ts>       # apply review.jsonl answers, fin
 poetry run demo --max-questions 5              # review-gate slot budget (0 = never pause)
 poetry run reflexion                           # reflexion demo: grounded critic, cyclic graph
 poetry run reflection                          # reflection A/B foil: tool-less judge
+poetry run reflection --max-tool-calls 4       # quickest tour of the countdown
 poetry run pytest                              # fast, LLM-free; includes the markdown lint gate
 poetry run pytest tests/test_review.py -v      # one file
 poetry run pytest tests/test_review.py::test_review_once_guard -v   # one test
@@ -99,6 +100,25 @@ window and the compaction budget.
   checked on every model call (tool-loop iterations included). Ranker and
   final-report agents get `num_ctx` only (single-turn). One console line
   when it fires; no artifact files.
+- **Reflection's tool budget** (`reflection_demo/budget.py`): per **pass**,
+  not per turn - `AgentLoopMiddleware` runs every pass inside one
+  `agent.run()`, so there is no turn boundary at which to mint a fresh
+  counter. `PassBudget.start_pass()` is called from `next_message` instead,
+  the one hook that fires between passes. `remove_tools()` is only
+  reachable from inside a tool call, so it cannot strip pre-emptively: the
+  final pass strips read tools after its first call rather than before it.
+  Countdown wording is byte-identical to `reflexion_demo/budget.py`'s,
+  pinned by `tests/test_budget_wording_parity.py`.
+- **Framework gotcha - `FunctionInvocationContext.result` is `list[Content]`,
+  not a string** (both demos' `budget.py`, `_append_note`): appending a
+  coaching note with an f-string (`f"{context.result}\n\n{note}"`)
+  stringifies the list to Python reprs
+  (`[<agent_framework._types.Content object at 0x...>]`) and destroys the
+  tool's actual output - the model receives a repr instead of the file it
+  asked for. Caught only by a live run; it predates this branch in
+  `reflexion_demo` too. Append to the last text `Content` in place instead
+  of flattening the list to a string. Anyone writing function middleware
+  that annotates a tool result needs to know this.
 
 ## Upstream samples (microsoft/agent-framework)
 

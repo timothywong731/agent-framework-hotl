@@ -10,17 +10,19 @@
 
 Standalone demo of the **reflection mechanism**, built as a deliberate A/B
 foil to `reflexion_demo`: the same corpus, the same default topic, the same
-worker tool *set*, the same report artifact — with **one variable changed on
-purpose**, the critic's access to the *sources*.
+worker tool *set* and tool-call budget, the same report artifact — with
+**one variable changed on purpose**, the critic's access to the *sources*.
 
-"On purpose" rather than "only": two further differences fall out of the two
-demos being separate packages, and are recorded rather than glossed because a
-reader will find them anyway. They do not point the same way. The tool-call
-budget (§6) handicaps the *reflexion* side, since this worker runs unbounded,
-so it cannot manufacture the expected result. The missing second-`agent.run`
-delivery retry (§8 — re-entering the loop would burn a pass) cuts the other
-way, against the reflection side, and *could*: read a reflection report that
-landed on the longest-reply fallback with that in mind.
+"On purpose" rather than "only": one further difference falls out of the two
+demos being separate packages, and is recorded rather than glossed because a
+reader will find it anyway. The missing second-`agent.run` delivery retry
+(§8 — re-entering the loop would burn a pass) cuts against the reflection
+side, and *could*: read a reflection report that landed on the longest-reply
+fallback with that in mind. The tool-call budget used to be a *second*,
+uncontrolled asymmetry here (the reflexion worker capped, this one
+unbounded) — see §6, now reversed: both workers run under an identical
+per-turn/per-pass budget with identical countdown coaching, so the worker
+side of the A/B differs in nothing but the delivery retry above.
 
 - `reflexion_demo`: the critic is an `Agent` node in a cyclic graph holding
   `list_files` / `read_file` / `read_report`. It reads the report itself and
@@ -264,21 +266,33 @@ cell. Same idioms — oversized reads truncated, failures returned as
 The worker's tool *set* is byte-for-byte the reflexion worker's. That is the
 control in the experiment.
 
-**No tool-call budget and no mid-turn stripping.** The strip mechanism is
-already demonstrated by `reflexion_demo`; repeating it here would double the
-package for no additional insight and force a copy of `budget.py` to honour
-the standalone rule. `worker.md` instructs the model to explore economically
-instead; `max_iterations` is the only bound.
+**Reversed: a per-pass tool-call budget and mid-turn stripping, matching the
+reflexion worker's.** This section originally argued the strip mechanism was
+"already demonstrated by `reflexion_demo`; repeating it here would double the
+package for no additional insight." That reasoning is now known to be wrong
+on both counts — see
+`docs/superpowers/specs/2026-07-30-reflection-tool-budget-design.md` for the
+full design, and briefly:
 
-That makes the *bound* on tool use a second uncontrolled difference, not just
-the absence of a mechanism: the reflexion worker is capped at 12 calls per
-turn with mid-turn stripping, this one at nothing. The bound is what limits how
-much evidence a worker can gather, so it is not cosmetic — but it runs in this
-demo's favour, because the reflection worker is the less constrained of the
-two. If it still misses the planted conflicts, the conclusion is stronger. It
-is stated in §1 and in the README's A/B recipe for exactly that reason: an
-asymmetry a skeptical reader discovers unaided reads as a hidden confound,
-while one that is named and signed reads as a control.
+- **It removes a confound.** The unbounded reflection worker was a *second*,
+  uncontrolled asymmetry against the reflexion worker's 12-calls-per-turn
+  budget — the A/B differed in two variables, not one. Adding the budget is
+  what makes "exactly one variable changed" (the critic) true of the worker
+  side, rather than merely acknowledged and left standing (§1).
+- **It fixes an observed defect.** A live `--max-passes 1` run hit
+  `write_report never called - persisted the longest reply instead`: the
+  worker spent its only pass exploring and never delivered. The countdown
+  coaching gives it a reason to stop and write before that happens.
+
+The budget is per **pass**, not per turn — `AgentLoopMiddleware` runs every
+pass inside one `agent.run()`, so there is no turn boundary at which to mint
+a fresh counter; `PassBudget.start_pass()` is called from `next_message`
+instead, the one hook that fires between passes. `remove_tools()` is only
+reachable from inside a tool call, so it cannot strip pre-emptively: the
+final pass strips read tools after its first call rather than before it.
+`budget.py` is still a deliberate copy of `reflexion_demo`'s, not a shared
+import, consistent with §9's standalone rule; countdown wording is
+byte-identical across both, pinned by `tests/test_budget_wording_parity.py`.
 
 ## 7. Prompts
 
@@ -435,10 +449,11 @@ fakes over mocks — repo rules. No `tests/__init__.py`.
 
 ## 12. Out of scope (deliberate)
 
-Per-turn tool budget and mid-turn stripping (§6), checkpoint/resume,
-scratchpad steering, compaction, `ArtifactStore`/ledger reuse, DevUI, and any
-comparison script — `diff` over the two `report.md` files is the comparison,
-and a bespoke tool would be one more thing to maintain for no insight.
+Checkpoint/resume, scratchpad steering, compaction, `ArtifactStore`/ledger
+reuse, DevUI, and any comparison script — `diff` over the two `report.md`
+files is the comparison, and a bespoke tool would be one more thing to
+maintain for no insight. (The tool-call budget and mid-turn stripping this
+section previously scoped out are no longer out of scope — see §6.)
 
 Also out of scope: a rule-based (`should_continue` predicate over the draft
 text, no second model) termination variant. It is the cheaper and more
@@ -461,6 +476,9 @@ is the whole reason this demo sits next to the reflexion one.
   exists to clarify is present in Microsoft's own repository).
 - `docs/superpowers/specs/2026-07-17-reflexion-demo-design.md` — the demo
   this one is the foil to.
+- `docs/superpowers/specs/2026-07-30-reflection-tool-budget-design.md` —
+  reverses §6's original "no budget" call; the per-pass budget and countdown
+  coaching design.
 - Shinn et al., *Reflexion: Language Agents with Verbal Reinforcement
   Learning* (2023), <https://arxiv.org/abs/2303.11366>.
 - Huang et al., *Large Language Models Cannot Self-Correct Reasoning Yet*

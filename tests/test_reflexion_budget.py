@@ -1,6 +1,8 @@
 """Tool-call budget: counting, exemption, and mid-turn read-tool stripping."""
 import pytest
 
+from agent_framework import Content
+
 from reflexion_demo.budget import (
     BUDGET_SPENT,
     BUDGETED_TOOL_NAMES,
@@ -24,10 +26,10 @@ class FakeInvocationContext:
     rebuilds it. ``remove_tools`` mutates in place, as the real one does.
     """
 
-    def __init__(self, tool_name, tools=("list_files", "read_file", "write_report")):
+    def __init__(self, tool_name, tools=("list_files", "read_file", "write_report"), result="tool output"):
         self.function = _Fn(tool_name)
         self.tools = tools if isinstance(tools, list) else list(tools)
-        self.result = "tool output"
+        self.result = result
         self.removed = []
 
     def remove_tools(self, tools):
@@ -116,6 +118,37 @@ async def test_none_result_is_stringified_not_crashed():
     ctx.result = None
     await _call(mw, ctx)
     assert BUDGET_SPENT in ctx.result
+
+
+async def test_content_list_result_survives_the_note():
+    """Regression: real ``context.result`` is ``list[Content]``, not a str -
+    the framework parses every tool return value into that shape before
+    function middleware runs (see ``FunctionTool.parse_result``). An
+    f-string over the list stringifies each ``Content`` to its Python repr
+    and destroys the real tool output; this must not happen."""
+    budget = ToolBudget(max_calls=1)
+    mw = make_budget_middleware(budget, BUDGETED_TOOL_NAMES, "worker")
+    ctx = FakeInvocationContext("read_file", result=[Content.from_text("REAL-FILE-CONTENT-12345")])
+    await _call(mw, ctx)
+    assert isinstance(ctx.result, list)
+    assert len(ctx.result) == 1
+    assert "REAL-FILE-CONTENT-12345" in ctx.result[0].text   # original output preserved
+    assert BUDGET_SPENT in ctx.result[0].text                # note still delivered
+
+
+async def test_content_list_with_no_text_content_gets_a_new_text_item():
+    """A tool result of only non-text Content (e.g. an image) has nothing to
+    append the note to in place - a new text Content carries it instead of
+    the note being silently dropped."""
+    budget = ToolBudget(max_calls=1)
+    mw = make_budget_middleware(budget, BUDGETED_TOOL_NAMES, "worker")
+    image = Content.from_data(data=b"\x89PNG", media_type="image/png")
+    ctx = FakeInvocationContext("read_file", result=[image])
+    await _call(mw, ctx)
+    assert len(ctx.result) == 2
+    assert ctx.result[0] is image                            # original item untouched
+    assert ctx.result[1].type == "text"
+    assert BUDGET_SPENT in ctx.result[1].text
 
 
 async def test_countdown_warns_while_runway_remains():

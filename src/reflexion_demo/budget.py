@@ -20,7 +20,7 @@ confound in the A/B these demos exist to run.
 """
 from dataclasses import dataclass
 
-from agent_framework import FunctionInvocationContext, function_middleware
+from agent_framework import Content, FunctionInvocationContext, function_middleware
 
 BUDGETED_TOOL_NAMES = frozenset({"list_files", "read_file", "read_report"})
 
@@ -38,6 +38,35 @@ BUDGET_SPENT = ("Exploration is closed. You have what you need - write the "
                 "complete report now with write_report.")
 
 _PREFIX = "[budget] "
+
+
+def _append_note(result, note: str):
+    """Append a budget note to a tool result without destroying it.
+
+    By the time function middleware sees ``context.result``, the framework
+    has already parsed the tool's raw return value into ``list[Content]``
+    (``FunctionTool.parse_result`` - every result, text or otherwise, is
+    normalized to that shape). ``f"{result}"`` over that list stringifies
+    each ``Content`` to its Python repr
+    (``[<agent_framework._types.Content object at 0x...>]``), silently
+    replacing the real tool output with an unusable placeholder - verified
+    against a live run where the model could no longer read the corpus at
+    all. So the note is attached to a text ``Content`` in place (or appended
+    as a new one) instead of flattening the whole list to a string.
+
+    A duck-typed fake or a tool wired with ``result_parser=SKIP_PARSING``
+    can still hand us a plain ``str`` (or ``None``); that path keeps working
+    exactly as before.
+    """
+    if isinstance(result, list):
+        for item in reversed(result):
+            if getattr(item, "type", None) == "text":
+                item.text = f"{item.text}\n\n{_PREFIX}{note}"
+                return result
+        # No text Content in the list (e.g. only an image) - append one
+        # rather than dropping the note.
+        return [*result, Content.from_text(f"{_PREFIX}{note}")]
+    return f"{result or ''}\n\n{_PREFIX}{note}"
 
 
 @dataclass
@@ -78,7 +107,7 @@ def make_budget_middleware(budget: ToolBudget, budgeted, label: str):
             # re-plan, rather than only after the tools are gone.
             line = COUNTDOWN.get(budget.remaining)
             if line:
-                context.result = f"{context.result or ''}\n\n{_PREFIX}{line}"
+                context.result = _append_note(context.result, line)
             return
         # >= not ==: both executors make two run() calls on one budget, and
         # the framework rebuilds the live tool list per run, so a strip does
@@ -92,7 +121,7 @@ def make_budget_middleware(budget: ToolBudget, budgeted, label: str):
             # Names not present are ignored by the framework, so passing
             # the whole budgeted set is safe for both agents.
             context.remove_tools(sorted(budgeted))
-        context.result = f"{context.result or ''}\n\n{_PREFIX}{BUDGET_SPENT}"
+        context.result = _append_note(context.result, BUDGET_SPENT)
         print(f"  [{label}] exploration closed ({budget.max_calls} calls) - read tools stripped")
 
     return budget_middleware

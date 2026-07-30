@@ -109,10 +109,11 @@ def build_agent(corpus_root: Path, report_path: Path, judge_instructions: str,
     The warning is deliberately NOT filtered - a demo that hides the
     framework's own stability signal from its reader is lying by omission.
 
-    ``fresh_context`` stays at its default ``False``: each pass accumulates
-    the prior conversation, which is precisely "grounded on its own chat
-    history" - the property that separates reflection from reflexion's fresh
-    session per cycle.
+    The returned agent must be run WITH a session (``agent.create_session()``,
+    see ``_amain``) for the accumulation this pattern claims. The loop
+    *replaces* ``context.messages`` between passes rather than appending to
+    them, so a session-less run hands pass 2 only the injected progress log
+    plus the nudge - the original topic and every tool result are gone.
 
     Returns:
         ``(agent, flag)``.
@@ -125,10 +126,22 @@ def build_agent(corpus_root: Path, report_path: Path, judge_instructions: str,
     # @experimental and warns on construction, and that warning is left to
     # reach the reader on purpose (see the docstring above).
     #
-    # No fresh_context=True passed either: the default False means every
-    # pass of this loop keeps accumulating onto the same conversation, which
-    # is the "grounded on its own chat history" half of the reflection vs.
-    # reflexion contrast. Its absence here IS the decision.
+    # Two defaults are load-bearing and left unset on purpose:
+    #
+    #   fresh_context=False - with a session attached (see _amain) each pass
+    #   runs against the accumulated transcript instead of restarting from the
+    #   original prompt. That is the "grounded on its own chat history" half of
+    #   the reflection vs. reflexion contrast; reflexion mints a fresh session
+    #   per cycle. Setting True would additionally snapshot and restore the
+    #   session between passes, discarding exactly that history.
+    #
+    #   inject_progress=True - the real continuity carrier, and invisible
+    #   unless named. After every pass the loop appends that pass's text to a
+    #   progress log and prepends it to the next pass's input as a "Progress
+    #   so far:" user message. With a session attached the loop injects only
+    #   the LATEST entry (the session already holds the earlier turns); with no
+    #   session it injects the whole log, re-sending every prior pass's full
+    #   report - which at num_ctx=4096 is what a 3-pass run cannot afford.
     #
     # judge_client is a bare OllamaChatClient with no tools/session/middleware
     # of its own - contrast with the worker Agent below, whose tools are
@@ -183,7 +196,19 @@ async def _amain() -> None:
 
     print(f"Topic: {args.topic}")
     print(f"Budget: {args.max_passes} passes (the judge holds NO tools)")
-    result = await agent.run(render_worker_prompt(topic=args.topic, max_passes=args.max_passes))
+    # One session for the whole run - the same idiom as reflexion's worker,
+    # used for the opposite purpose. AgentLoopMiddleware REPLACES
+    # context.messages between passes, so without a session pass 2 would see
+    # only the injected progress log and the nudge: no topic, no tool results,
+    # no prior report. The session is what makes each pass build on the last
+    # (an InMemoryHistoryProvider is auto-attached, loading the stored
+    # transcript before each pass and storing that pass's messages after), and
+    # it is also what narrows the loop's progress injection to the latest entry
+    # instead of re-sending every prior pass in full.
+    session = agent.create_session()
+    result = await agent.run(
+        render_worker_prompt(topic=args.topic, max_passes=args.max_passes),
+        session=session)
     persist_fallback(result, report_path, flag)
     outcome, passes = log.finish(args.max_passes, report_path)
 

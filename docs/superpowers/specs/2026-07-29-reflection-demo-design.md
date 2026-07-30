@@ -83,13 +83,40 @@ agent = Agent(
     )],
     default_options={"num_ctx": resolve_num_ctx()},
 )
-await agent.run(render_worker_prompt(topic=args.topic))
+session = agent.create_session()
+await agent.run(
+    render_worker_prompt(topic=args.topic, max_passes=args.max_passes),
+    session=session,
+)
 ```
 
-`fresh_context` stays at its default `False`: each pass accumulates the
-prior conversation, which is precisely "grounded on its own chat history" —
-the property that distinguishes reflection from reflexion's fresh
-`AgentSession` per cycle.
+### Continuity between passes: the session and `inject_progress`
+
+`AgentLoopMiddleware` **replaces** `context.messages` before each pass
+(`context.messages = next_messages` in `_process_non_streaming`); it does not
+append. Two mechanisms therefore carry continuity, and both must be named
+because neither is visible at the call site:
+
+- **The session.** `agent.run(..., session=session)` is what makes each pass
+  build on the last. With a session attached and no context providers
+  registered, `Agent` auto-attaches an `InMemoryHistoryProvider` that loads the
+  stored transcript before every pass and stores that pass's input and response
+  messages after it, so pass *N* sees the original topic prompt, every earlier
+  reply, and every tool result. **Without** a session, pass 2's entire input is
+  the injected progress log plus the nudge — topic and tool results gone — which
+  would make the "grounded on its own chat history" claim false.
+- **`inject_progress`**, left at its default `True`. After each pass the loop
+  appends that pass's text to a progress log and prepends it to the next pass's
+  input as a single `Progress so far:` user message. With a session attached the
+  loop injects only the **latest** entry (`_resolve_next_message` narrows to
+  `progress[-1:]` because the session already holds the earlier turns); with no
+  session it injects the whole log, re-sending every prior pass's full report —
+  unaffordable at the default `num_ctx=4096`.
+
+`fresh_context` stays at its default `False`. Setting it `True` would restart
+each pass from the original prompt *and* snapshot/restore the session around the
+loop, discarding exactly the accumulated history that distinguishes reflection
+from reflexion's fresh `AgentSession` per cycle.
 
 The judge's `OllamaChatClient()` is bare — it bypasses `Agent` by design, so
 `default_options` (an `Agent`-level mechanism) never reaches it; `num_ctx`
@@ -138,7 +165,7 @@ Accuracy is the distinction the demo exists to demonstrate.
 | What it is | `Agent` node in a cyclic graph | bare `OllamaChatClient`, called directly |
 | Corpus tools | `list_files`, `read_file` | none |
 | Report access | `read_report` — reads the file off disk | none — the transcript only |
-| Session | fresh `AgentSession` per cycle | none; the loop replays the running transcript |
+| Session | fresh `AgentSession` per cycle | none — the predicate rebuilds its prompt from the original request plus the worker's latest text (the *worker* holds the run's one session, §3) |
 | Judges | what was **written** | what the worker **said** |
 
 The framework states the first three rows itself, in the docstring of

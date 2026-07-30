@@ -499,7 +499,7 @@ sequenceDiagram
 
     Note over W: fresh agent + fresh budget every turn
     W->>W: list_files / read_file ... (counted)
-    B-->>W: exhausting call: read tools stripped,<br>"produce the report from what you have"
+    B-->>W: exhausting call: read tools stripped,<br>"exploration is closed - write now"
     W->>W: write_report (exempt)
     W->>R: DraftReady
     Note over R: same corpus tools, same budget rules
@@ -528,7 +528,7 @@ data-residency and secrets standards - give the reviewer real grounds to
 reject a shallow first draft. Watch the console for the mechanism firing:
 
 ```text
-  [worker] tool budget exhausted (12 calls) - read tools stripped
+  [worker] exploration closed (12 calls) - read tools stripped
   [reviewer] cycle 1: REJECTED
   [reviewer] feedback: The report ignores the enterprise Azure mandate...
 == review budget exhausted: forced finalize (read tools stripped) ==
@@ -588,9 +588,19 @@ and closes its tools after its **first** tool call rather than pre-emptively:
 ignores "do not start new exploration" still gets exactly one more
 exploratory call before the strip fires.
 
-With `--max-tool-calls 3` or lower the countdown fires on the very first
-call of every pass, since one call already leaves 3 or fewer remaining -
-inherent to a tight budget, not a bug.
+A small budget starts the countdown partway through, or skips it entirely -
+worth knowing before it is mistaken for a bug:
+
+| `--max-tool-calls` | first call leaves | what fires on call 1 |
+|---|---|---|
+| 1 | 0 remaining | the closing message only - `COUNTDOWN` is keyed 3/2/1 and is never reached |
+| 2 | 1 remaining | `COUNTDOWN[1]` |
+| 3 | 2 remaining | `COUNTDOWN[2]` |
+| 4 | 3 remaining | `COUNTDOWN[3]` - the smallest budget that shows the full 3 -> 2 -> 1 sequence |
+
+4 is therefore the smallest `--max-tool-calls` value that exercises every
+rung of the countdown - the "quickest tour" `CLAUDE.md`'s Commands block
+runs it for, and the value the live example below uses.
 
 A live `--max-passes 2 --max-tool-calls 4` run shows the mechanism working
 end to end: the worker's exploration closed after 4 calls, and the judge

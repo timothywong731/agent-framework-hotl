@@ -109,16 +109,6 @@ window and the compaction budget.
   final pass strips read tools after its first call rather than before it.
   Countdown wording is byte-identical to `reflexion_demo/budget.py`'s,
   pinned by `tests/test_budget_wording_parity.py`.
-- **Framework gotcha - `FunctionInvocationContext.result` is `list[Content]`,
-  not a string** (both demos' `budget.py`, `_append_note`): appending a
-  coaching note with an f-string (`f"{context.result}\n\n{note}"`)
-  stringifies the list to Python reprs
-  (`[<agent_framework._types.Content object at 0x...>]`) and destroys the
-  tool's actual output - the model receives a repr instead of the file it
-  asked for. Caught only by a live run; it predates this branch in
-  `reflexion_demo` too. Append to the last text `Content` in place instead
-  of flattening the list to a string. Anyone writing function middleware
-  that annotates a tool result needs to know this.
 
 ## Upstream samples (microsoft/agent-framework)
 
@@ -179,6 +169,15 @@ which everything here must, or Ollama silently truncates.
 - `review.py` must NOT use `from __future__ import annotations`:
   `@response_handler` validates `ctx` via `inspect.signature`, and string
   annotations break it (see the note at the top of that file).
+- **`FunctionInvocationContext.result` is `list[Content]`, not a string**
+  (both demos' `budget.py`, `_append_note`): appending a coaching note with
+  an f-string (`f"{context.result}\n\n{note}"`) stringifies the list to
+  Python reprs (`[<agent_framework._types.Content object at 0x...>]`) and
+  destroys the tool's actual output - the model receives a repr instead of
+  the file it asked for. Caught only by a live run; it predates this branch
+  in `reflexion_demo` too. Append to the last text `Content` in place
+  instead of flattening the list to a string. Anyone writing function
+  middleware that annotates a tool result needs to know this.
 - Model-output hygiene lives in `phases.py`: `_clean_text` strips leaked
   `<|...|>` template tokens; `_invoke_report` retries once on empty text.
   The retry only sees the earlier exploration because `_run_initial` /

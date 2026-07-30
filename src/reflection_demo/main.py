@@ -142,8 +142,16 @@ def build_agent(corpus_root: Path, report_path: Path, judge_instructions: str,
     #   progress log and prepends it to the next pass's input as a "Progress
     #   so far:" user message. With a session attached the loop injects only
     #   the LATEST entry (the session already holds the earlier turns); with no
-    #   session it injects the whole log, re-sending every prior pass's full
-    #   report - which at num_ctx=4096 is what a 3-pass run cannot afford.
+    #   session it injects the whole log.
+    #
+    # The session route is the EXPENSIVE one, and is chosen for fidelity, not
+    # for cost: it re-sends the stored transcript - function_call and
+    # function_result messages included, i.e. every corpus file the worker
+    # read - plus the latest progress entry, where the session-less route
+    # sends a digest of prior pass texts and nothing else. There is no
+    # compaction_strategy on this agent (unlike hotl_demo's phase agents), so
+    # a 3-pass corpus-reading run at the default num_ctx=4096 may silently
+    # truncate; raise --num-ctx for multi-pass runs.
     #
     # judge_client is a bare OllamaChatClient with no tools/session/middleware
     # of its own - contrast with the worker Agent below, whose tools are

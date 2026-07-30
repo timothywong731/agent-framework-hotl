@@ -626,9 +626,11 @@ unreachable and shipped every run `unjudged`. It matches the literature too -
 in Self-Refine the critic always sees the draft; it just has no ground truth
 to check it against.
 
-The rubric is identical on **Coverage** and **Actionability** - deliberately,
-because giving the two critics different standards on the dimensions they can
-both assess would confound two variables and prove nothing. **Accuracy** is
+The rubric is identical on **Actionability** and all but identical on
+**Coverage** - the judge's Coverage line drops "in the sources", since it
+holds none. That parity is deliberate: giving the two critics different
+standards on the dimensions they can both assess would confound two variables
+and prove nothing. **Accuracy** is
 necessarily weaker on the reflection side: the reflexion reviewer is asked
 whether "claims match the sources they cite", which a critic holding no
 sources cannot evaluate, so the judge is asked only whether "claims are
@@ -668,6 +670,14 @@ session=agent.create_session())`, which attaches a history provider that
 reloads the transcript each pass) and `inject_progress`, on by default, which
 prepends the progress log - narrowed to just the latest entry once a session
 is attached.
+
+The session is the **expensive** route, chosen for fidelity and not for cost:
+it re-sends the stored transcript - tool calls and their raw results, i.e.
+every corpus file the worker read - *plus* the latest progress entry, where a
+session-less run sends only a digest of prior pass texts. There is no
+`compaction_strategy` on this agent (the HOTL phase agents have one), so a
+3-pass corpus-reading run at the default `num_ctx=4096` can silently truncate.
+Raise `--num-ctx` for multi-pass runs.
 
 The judge is a bare `OllamaChatClient`, not an `Agent`, so `Agent`'s
 `default_options={"num_ctx": ...}` never reaches it: there is no `Agent`

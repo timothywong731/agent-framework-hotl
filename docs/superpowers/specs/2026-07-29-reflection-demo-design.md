@@ -15,10 +15,12 @@ purpose**, the critic's access to the *sources*.
 
 "On purpose" rather than "only": two further differences fall out of the two
 demos being separate packages, and are recorded rather than glossed because a
-reader will find them anyway. Neither favours the expected result — see §6
-(no tool-call budget on this worker, so it is the *less* constrained of the
-two) and §8 (no second-`agent.run` delivery retry, because re-entering the
-loop would burn a pass).
+reader will find them anyway. They do not point the same way. The tool-call
+budget (§6) handicaps the *reflexion* side, since this worker runs unbounded,
+so it cannot manufacture the expected result. The missing second-`agent.run`
+delivery retry (§8 — re-entering the loop would burn a pass) cuts the other
+way, against the reflection side, and *could*: read a reflection report that
+landed on the longest-reply fallback with that in mind.
 
 - `reflexion_demo`: the critic is an `Agent` node in a cyclic graph holding
   `list_files` / `read_file` / `read_report`. It reads the report itself and
@@ -119,8 +121,16 @@ because neither is visible at the call site:
   input as a single `Progress so far:` user message. With a session attached the
   loop injects only the **latest** entry (`_resolve_next_message` narrows to
   `progress[-1:]` because the session already holds the earlier turns); with no
-  session it injects the whole log, re-sending every prior pass's full report —
-  unaffordable at the default `num_ctx=4096`.
+  session it injects the whole log.
+
+The session route is the **more expensive** of the two, and is chosen for
+fidelity rather than cost: it re-sends the stored transcript — `function_call`
+and `function_result` messages included, i.e. every corpus file the worker read
+— *plus* the latest progress entry, where the session-less route sends only a
+digest of prior pass texts. The latent risk is worth stating plainly: there is
+no `compaction_strategy` on this agent (unlike `hotl_demo`'s phase agents), so
+a 3-pass corpus-reading run at the default `num_ctx=4096` may silently
+truncate. `--num-ctx` exists for that, and the README's gotchas say so.
 
 `fresh_context` stays at its default `False`. Setting it `True` would restart
 each pass from the original prompt *and* snapshot/restore the session around the
@@ -162,9 +172,10 @@ expands to.
 
 ### Rubric parity
 
-The judge's rubric is **identical to the reviewer's on Coverage and
-Actionability**; Accuracy is necessarily weaker because the judge has no
-corpus access and cannot verify that claims match their sources. If the two
+The judge's rubric is **identical to the reviewer's on Actionability and all
+but identical on Coverage** — the judge's Coverage line drops "in the sources",
+the only concession to a critic that holds none. Accuracy is necessarily
+weaker, because the judge cannot verify that claims match their sources. If the two
 critics were also given different standards on those two dimensions, the A/B
 would confound two variables and prove nothing. This documented asymmetry in
 Accuracy is the distinction the demo exists to demonstrate.
@@ -280,8 +291,11 @@ Jinja2 markdown under `src/reflection_demo/prompts/`, no YAML frontmatter
   be re-rendered. Instructs: explore the corpus with tools, ground every
   claim in a source file, deliver via `write_report`, explore economically.
 
-  It states that the `write_report` call is the **only** thing that saves the
-  report, and deliberately does **not** describe the critic's channels. An earlier
+  It states that only a `write_report` call **reliably** saves the report, and
+  names the consequence of skipping it (the longest reply of the run is
+  salvaged instead, §8) — a flat "not stored anywhere" would be false, since
+  `persist_fallback` does store it. It deliberately does **not** describe the
+  critic's channels. An earlier
   wording ("a reviewer will read your reply and may send it back") did, and it
   cut two ways: it pulled the model toward putting the report in chat text
   instead of calling the tool — the live `--max-passes 1` run hit the
@@ -331,8 +345,9 @@ Error handling:
   access and raises `pydantic.ValidationError` for any non-empty reply that is
   not schema-conforming JSON — i.e. for exactly the reply the markers exist to
   read. Unguarded, that exception escapes `should_continue` →
-  `_evaluate_stop` → `agent.run()` (which catches only `KeyboardInterrupt`)
-  and kills the run *before* `persist_fallback` and `log.finish`: no report,
+  `_evaluate_stop` → `agent.run()` — nothing on that path catches it, and this
+  demo's own `main.run()` catches only `KeyboardInterrupt` — and kills the run
+  *before* `persist_fallback` and `log.finish`: no report,
   no outcome line, and the whole marker branch dead code. The predicate
   therefore reads `response.value` inside `try/except ValueError`
   (`ValidationError` subclasses `ValueError` in pydantic v2) and passes `None`

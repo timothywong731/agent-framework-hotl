@@ -94,13 +94,20 @@ async def test_two_passes_through_the_real_loop(tmp_path, monkeypatch):
     # REPLACES context.messages between passes, so the original topic prompt can
     # only be in pass 2's input because the auto-attached history provider
     # reloaded it from the session.
+    # Only TOPIC discriminates: pass 1's own text reaches pass 2 through the
+    # progress digest even with no session, so its presence proves nothing about
+    # the session. The original topic prompt has no other route.
     assert TOPIC in pass_2_text
     assert WORKER_PASS_1 in pass_2_text
 
-    # inject_progress=True, narrowed by the session to the LATEST entry only:
-    # exactly one "Progress so far:" message, carrying pass 1 and nothing else.
+    # inject_progress=True: exactly one "Progress so far:" message, and its body
+    # holds exactly one entry (the loop renders one "- " line per entry). At
+    # pass 2 the log holds a single entry either way, so this does NOT prove the
+    # session narrowed to progress[-1:] - it pins that injection happened at all
+    # and that the digest is one entry wide.
     progress = [m.text for m in worker_calls[1]["messages"] if m.text.startswith("Progress so far:")]
     assert len(progress) == 1
+    assert len([ln for ln in progress[0].splitlines() if ln.startswith("- ")]) == 1
 
     # num_ctx reached BOTH clients: the worker through Agent.default_options,
     # the judge through the predicate's per-call options (it has no Agent to

@@ -541,8 +541,11 @@ plus an outcome line, written by plain code, never by the model:
 
 `poetry run reflection` is the A/B foil to the reflexion demo, and the
 practical half of [Reflexion vs reflection](#reflexion-vs-reflection) above.
-Same corpus, same default topic, same worker tools, same report artifact -
-with exactly one variable changed: **the critic has no tools**.
+Same corpus, same default topic, same worker tool *set*, same report
+artifact - and one variable changed on purpose: **the critic has no tools**.
+Two further worker-side differences follow from the two demos being separate
+packages rather than from the experiment; both are named under [Running the
+A/B](#running-the-ab) below.
 
 ```mermaid
 flowchart LR
@@ -572,6 +575,32 @@ planted corpus conflicts - the enterprise Azure mandate against
 by *both* workers. Only the reflexion reviewer can open the sources and
 check whether the report actually addressed them.
 
+Two worker-side differences remain. Both fall out of the two demos being
+separate packages, not out of the experiment, and both are stated here rather
+than left for a skeptical reader to find:
+
+- **Tool budget.** The reflexion worker runs under a 12-call-per-turn budget
+  with mid-turn stripping (see [Two budgets, one
+  ending](#two-budgets-one-ending)); this worker has none, because the strip
+  mechanism is already demonstrated next door and repeating it would force a
+  copy of `budget.py` into a package that must not import from a sibling. The
+  tool *set* is identical, the *bound* is not - and the bound is what caps how
+  much evidence a worker can gather, so this is a real difference, not a
+  cosmetic one. It does not manufacture the expected result, though: it
+  handicaps the *reflexion* side. The reflection worker is the less
+  constrained of the two, so if it still misses the planted conflicts, the
+  finding is stronger rather than weaker.
+- **Delivery retry.** When the model finishes without calling `write_report`,
+  reflexion issues a second `agent.run` with an explicit nudge before falling
+  back to the longest reply. This demo cannot: a second `agent.run` re-enters
+  `AgentLoopMiddleware` and would burn a pass. Its worker is nudged only
+  *between* passes, so on the capped pass - and always under
+  `--max-passes 1` - there is no retry at all and the longest reply is
+  persisted directly. A live `--max-passes 1` run lands on exactly that path.
+  This one cuts the other way, against the reflection side, and is the reason
+  `worker.md` states that a `write_report` call is the only thing that saves
+  the report.
+
 ### What differs
 
 | | reflexion reviewer | reflection judge |
@@ -582,14 +611,22 @@ check whether the report actually addressed them.
 | Judges | what was **written** | what the worker **said** |
 | Terminal states | `approved` / `forced` (unapproved) | `answered` / `unjudged` |
 
-The rubric is deliberately identical on both sides - accuracy, coverage,
-actionability - so the only variable is evidence access.
+The rubric is identical on **Coverage** and **Actionability** - deliberately,
+because giving the two critics different standards on the dimensions they can
+both assess would confound two variables and prove nothing. **Accuracy** is
+necessarily weaker on the reflection side: the reflexion reviewer is asked
+whether "claims match the sources they cite", which a critic holding no
+sources cannot evaluate, so the judge is asked only whether "claims are
+consistent and the sources cited are named". That weakening is not a
+confound - it *is* the finding. A tool-less critic cannot be given the
+grounded rubric, and the closest honest rewording checks presentation where
+the other checks fact.
 
 The framework states the asymmetry itself, in the docstring of its own judge
 builder: *"The judge is called directly (no agent tools, session, or
 middleware)."*
 
-### Three gotchas worth knowing
+### Gotchas worth knowing
 
 `AgentLoopMiddleware` checks `max_iterations` **before** it evaluates
 `should_continue`, so on the capped pass the judge is never consulted and
@@ -600,7 +637,22 @@ verdicts.
 The judge fails **open**: an unparseable verdict keeps the loop running,
 where reflexion's reviewer fails **closed** and rejects. Both are right for
 their pattern - reflexion must never ship unverified work as approved, while
-here the pass cap is what guarantees termination.
+here the pass cap is what guarantees termination. Reaching that fallback at
+all takes a guard: `ChatResponse.value` parses *lazily*, so with
+`response_format` set it raises `pydantic.ValidationError` on the first
+non-conforming reply - which is precisely the reply the `VERDICT: DONE` /
+`VERDICT: MORE` fallback exists for. Unguarded it escapes `agent.run()` and
+kills the run before any report is written. The framework's own
+`_build_judge_condition` reads `response.value` the same unguarded way.
+
+The loop **replaces** the agent's input messages between passes instead of
+appending to them, so `agent.run(prompt)` on its own gives pass 2 nothing but
+a "Progress so far" digest and a nudge - no topic, no tool results. Continuity
+comes from two places worth naming: the session (`agent.run(prompt,
+session=agent.create_session())`, which attaches a history provider that
+reloads the transcript each pass) and `inject_progress`, on by default, which
+prepends the progress log - narrowed to just the latest entry once a session
+is attached.
 
 The judge is a bare `OllamaChatClient`, not an `Agent`, so `Agent`'s
 `default_options={"num_ctx": ...}` never reaches it: there is no `Agent`
@@ -722,5 +774,5 @@ the agents reliably find questions worth asking a human.
 ```bash
 poetry run pytest                              # fast, LLM-free (includes markdown lint)
 OLLAMA_E2E=1 poetry run pytest -m ollama -s    # full live pipeline (slow)
-poetry run pymarkdown --config .pymarkdown.json scan README.md CLAUDE.md src/hotl_demo/prompts src/reflexion_demo/prompts
+poetry run pymarkdown --config .pymarkdown.json scan README.md CLAUDE.md src/hotl_demo/prompts src/reflexion_demo/prompts src/reflection_demo/prompts
 ```

@@ -21,13 +21,13 @@ poetry run demo                                # needs local Ollama + gemma4:31b
 poetry run demo --pause                        # checkpoint + exit at the review gate
 poetry run demo --resume output/run_<ts>       # apply review.jsonl answers, finish the run
 poetry run demo --max-questions 5              # review-gate slot budget (0 = never pause)
-poetry run reflection                           # reflection A/B foil: tool-less judge
-poetry run reflection --max-passes 1            # degenerate case: one pass, never judged
+poetry run reflexion                           # reflexion demo: grounded critic, cyclic graph
+poetry run reflection                          # reflection A/B foil: tool-less judge
 poetry run pytest                              # fast, LLM-free; includes the markdown lint gate
 poetry run pytest tests/test_review.py -v      # one file
 poetry run pytest tests/test_review.py::test_review_once_guard -v   # one test
 OLLAMA_E2E=1 poetry run pytest -m ollama -s    # live E2E, ~10 min on gemma4:31b
-poetry run pymarkdown --config .pymarkdown.json scan README.md CLAUDE.md src/hotl_demo/prompts
+poetry run pymarkdown --config .pymarkdown.json scan README.md CLAUDE.md src/hotl_demo/prompts src/reflexion_demo/prompts src/reflection_demo/prompts
 poetry run python scripts/make_pdfs.py         # regenerate PDFs after editing sample_data/docs_src/
 ```
 
@@ -177,8 +177,10 @@ which everything here must, or Ollama silently truncates.
   `tests/test_sample_data.py` green - the planted gaps/conflicts it asserts
   ARE the demo's question fuel.
 - Markdown lint (`pymarkdownlnt` via `.pymarkdown.json`) covers `README.md`,
-  `CLAUDE.md`, and the prompts directory only; the spec/plan under `docs/`
-  are historical and excluded.
+  `CLAUDE.md`, and all three `src/*/prompts` directories only; the spec/plan
+  under `docs/` are historical and excluded. `tests/test_markdown_lint.py`
+  IS the gate - keep the command above matching its target list, or a green
+  local run turns into a red suite.
 - CLI stays stdlib (`argparse`/`print`); the dependency set is deliberately
   minimal.
 - Review-gate progress must stay LEDGER-derived. The framework only persists

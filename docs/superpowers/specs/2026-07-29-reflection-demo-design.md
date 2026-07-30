@@ -10,8 +10,15 @@
 
 Standalone demo of the **reflection mechanism**, built as a deliberate A/B
 foil to `reflexion_demo`: the same corpus, the same default topic, the same
-worker tools, the same report artifact — with **exactly one variable
-changed**, the critic's access to evidence.
+worker tool *set*, the same report artifact — with **one variable changed on
+purpose**, the critic's access to evidence.
+
+"On purpose" rather than "only": two further differences fall out of the two
+demos being separate packages, and are recorded rather than glossed because a
+reader will find them anyway. Neither favours the expected result — see §6
+(no tool-call budget on this worker, so it is the *less* constrained of the
+two) and §8 (no second-`agent.run` delivery retry, because re-entering the
+loop would burn a pass).
 
 - `reflexion_demo`: the critic is an `Agent` node in a cyclic graph holding
   `list_files` / `read_file` / `read_report`. It re-checks the draft against
@@ -201,10 +208,11 @@ worker read. `test_judge_never_sees_tool_results_or_reasoning_traces`
 One bound: `--max-passes` (default 3) → `max_iterations`.
 
 `AgentLoopMiddleware._evaluate_stop` short-circuits on the cap **before**
-evaluating `should_continue` (`_harness/_loop.py:583`, so an expensive judge
-is not called once the cap has fired). The consequence is behavioural and
-must be documented, not hidden: **at the cap the judge is never consulted,
-and the report ships unjudged.**
+evaluating `should_continue`, so an expensive judge is not called once the cap
+has fired. (Named by method, not by line: `_harness/_loop.py` line numbers
+drift every release.) The consequence is behavioural and must be documented,
+not hidden: **at the cap the judge is never consulted, and the report ships
+unjudged.**
 
 This is the exact parallel of reflexion's forced finalize shipping the
 report *unapproved*, reached by a different route:
@@ -226,7 +234,7 @@ the traversal-guarded `list_files` / `read_file` pair over `sample_data/`;
 cell. Same idioms — oversized reads truncated, failures returned as
 `"ERROR: ..."` strings and never raised.
 
-The worker's tool set is byte-for-byte the reflexion worker's. That is the
+The worker's tool *set* is byte-for-byte the reflexion worker's. That is the
 control in the experiment.
 
 **No tool-call budget and no mid-turn stripping.** The strip mechanism is
@@ -234,6 +242,16 @@ already demonstrated by `reflexion_demo`; repeating it here would double the
 package for no additional insight and force a copy of `budget.py` to honour
 the standalone rule. `worker.md` instructs the model to explore economically
 instead; `max_iterations` is the only bound.
+
+That makes the *bound* on tool use a second uncontrolled difference, not just
+the absence of a mechanism: the reflexion worker is capped at 12 calls per
+turn with mid-turn stripping, this one at nothing. The bound is what limits how
+much evidence a worker can gather, so it is not cosmetic — but it runs in this
+demo's favour, because the reflection worker is the less constrained of the
+two. If it still misses the planted conflicts, the conclusion is stronger. It
+is stated in §1 and in the README's A/B recipe for exactly that reason: an
+asymmetry a skeptical reader discovers unaided reads as a hidden confound,
+while one that is named and signed reads as a control.
 
 ## 7. Prompts
 
@@ -245,6 +263,17 @@ Jinja2 markdown under `src/reflection_demo/prompts/`, no YAML frontmatter
   judge's feedback as the next iteration's input, so the prompt never has to
   be re-rendered. Instructs: explore the corpus with tools, ground every
   claim in a source file, deliver via `write_report`, explore economically.
+
+  It states that the `write_report` call is the **only** thing that saves the
+  report, and it deliberately does **not** tell the worker that the critic
+  reads its chat reply rather than the file. An earlier wording ("a reviewer
+  will read your reply and may send it back") did, and it cut two ways: it
+  pulled the model toward putting the report in chat text instead of calling
+  the tool — the live `--max-passes 1` run hit the longest-reply fallback — and
+  it is an instruction the reflexion worker does not have, so it broke the
+  worker parity §1 claims. Telling the worker the judge is blind would also let
+  it *game* the judge by narrating compliance in chat, which is a different
+  experiment from the one this demo runs.
 - `judge.md` — the judge's system instructions. Carries the same
   accuracy / coverage / actionability rubric as the reflexion reviewer (§3),
   plus the `JudgeVerdict` contract and the `VERDICT: DONE` / `VERDICT: MORE`
@@ -279,10 +308,32 @@ Error handling:
   an unparseable verdict). Both are correct for their pattern: reflexion
   must never ship unverified work as approved; reflection's cap is what
   guarantees termination, so an unreadable verdict simply costs a pass.
-- **`write_report` never called.** Same nudge-then-longest-text fallback as
-  `reflexion_demo/graph.py:_draft` — the model often emits the full report
-  as chat text and answers the nudge with filler, so the turn's *longest*
-  text wins, not the latest.
+
+  Reaching that fallback requires a guard, and the guard is the point:
+  `ChatResponse.value` is a **lazily-parsing property**. With
+  `response_format` set it runs `JudgeVerdict.model_validate_json` on first
+  access and raises `pydantic.ValidationError` for any non-empty reply that is
+  not schema-conforming JSON — i.e. for exactly the reply the markers exist to
+  read. Unguarded, that exception escapes `should_continue` →
+  `_evaluate_stop` → `agent.run()` (which catches only `KeyboardInterrupt`)
+  and kills the run *before* `persist_fallback` and `log.finish`: no report,
+  no outcome line, and the whole marker branch dead code. The predicate
+  therefore reads `response.value` inside `try/except ValueError`
+  (`ValidationError` subclasses `ValueError` in pydantic v2) and passes `None`
+  to `read_verdict` on failure. The framework's own `_build_judge_condition`
+  reads `response.value` unguarded, so a local model that ignores
+  `response_format` crashes MAF's built-in judge loop too.
+- **`write_report` never called.** Longest-assistant-text fallback only —
+  the model often emits the full report as chat text and then answers a later
+  nudge with filler, so the turn's *longest* text wins, not the latest. This
+  is **not** the same as `reflexion_demo/graph.py:_draft`, which first issues a
+  second `agent.run` with an explicit `_WRITE_REPORT_NUDGE` and only falls
+  back if that also fails. This demo cannot do that: a second `agent.run`
+  re-enters `AgentLoopMiddleware` and would consume a pass. Its worker is
+  nudged only *between* passes, through the loop's `next_message` — so there is
+  no delivery retry on the capped pass, and none at all under
+  `--max-passes 1`. The live E2E runs `--max-passes 1` and lands on this path
+  (`write_report never called - persisted the longest reply instead`).
 - **Missing corpus / unreachable Ollama.** `ensure_corpus` and `preflight`
   copied from `reflexion_demo/main.py`, same fail-fast messages.
 - CLI stays stdlib (`argparse` / `print`).
@@ -318,14 +369,29 @@ vocabularies are kept distinct on purpose.
 LLM-free by default (`-m 'not ollama'`), decision logic in pure functions,
 fakes over mocks — repo rules. No `tests/__init__.py`.
 
-- `tests/test_reflection_judge.py` — the predicate: a structured
-  `JudgeVerdict` parses; the `VERDICT: DONE` / `VERDICT: MORE` marker
-  fallback; an ambiguous or marker-less reply continues the loop; every
-  verdict reaches the log with the right `pass` number.
-- `tests/test_reflection_loop.py` — **the judge is not called on the capped
-  pass** (guards the `_loop.py:583` short-circuit against framework
-  upgrades); the log's terminal line is `unjudged` at the cap and
-  `answered` on early exit.
+- `tests/test_reflection_judging.py` — the pure functions in `judging.py`:
+  `read_verdict` (a structured `JudgeVerdict`; the `VERDICT: DONE` /
+  `VERDICT: MORE` marker fallback; an ambiguous or marker-less reply continues
+  the loop), `summarize`'s terminal arithmetic, and `RunLog`'s line shapes —
+  `unjudged` at the cap, `answered` on early exit.
+- `tests/test_reflection_loop.py` — the predicate itself: what it sends the
+  judge (no tool results, no reasoning traces, no non-text content at all),
+  the per-call `response_format` / `num_ctx` options, the guard for a
+  lazily-raising `ChatResponse.value`, the `next_message` feedback relay, and
+  the canary that **the judge is not called on the capped pass** (guards
+  `_evaluate_stop`'s short-circuit against framework upgrades).
+- `tests/test_reflection_integration.py` — the one LLM-free test that
+  constructs the real thing: `build_agent`'s wiring driven through **two
+  passes** of a real `Agent` + real `AgentLoopMiddleware` against a scripted
+  `BaseChatClient`. Covers the judge being called, the feedback relay reaching
+  pass 2, session accumulation, progress injection, `num_ctx` reaching both
+  clients, and a non-conforming verdict. Without it a typo in an `Agent(...)`
+  or `AgentLoopMiddleware(...)` keyword would surface only under
+  `OLLAMA_E2E=1`.
+- `tests/test_reflection_main.py` — CLI helpers, `ensure_corpus`, `preflight`
+  host/model normalization, and the `persist_fallback` longest-text rule.
+- `tests/test_reflection_prompts.py` — both templates render and carry their
+  contracts (rubric words, verdict markers, delivery instruction).
 - `tests/test_reflection_tools.py` — traversal guard, text-file filter,
   atomic report write, `ReportFlag` write detection.
 - `tests/test_e2e_reflection.py` — one live smoke test

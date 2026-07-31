@@ -160,12 +160,16 @@ def build_agent(corpus_root: Path, report_path: Path, topic: str,
     # byte-for-byte the reflexion worker's. That asymmetry is the demo.
     #
     # One budget for the run; next_message resets it at each pass boundary.
-    # Pass 1 has no boundary before it, so it starts non-finalizing here -
-    # unless the run is a single pass, in which case that pass IS the last and
-    # must close exploration after its first call, exactly as a capped final
-    # pass would.
+    # Pass 1 has no boundary before it and needs no priming: PassBudget is born
+    # spent=0, finalizing=False, which is exactly pass 1's state.
+    #
+    # Not even when max_passes == 1. Marking that lone pass finalizing closed
+    # exploration after its FIRST call while worker.md had just promised
+    # max_tool_calls of them - and next_message never fires on a single-pass
+    # run, so finalize.md, the only text that explains the strip, could not be
+    # delivered either. Delivery is still forced without it: at exhaustion the
+    # read tools are stripped and BUDGET_SPENT says why.
     budget = PassBudget(max_calls=max_tool_calls)
-    budget.start_pass(finalizing=max_passes == 1)
     loop = AgentLoopMiddleware(
         make_judge_predicate(OllamaChatClient(), judge_instructions, log,
                              resolve_num_ctx(), report_path),

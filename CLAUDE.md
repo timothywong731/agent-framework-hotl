@@ -113,6 +113,12 @@ window and the compaction budget.
   has 12 can plan a 12-file sweep and one told "a limited number" cannot.
   `tests/test_budget_wording_parity.py` pins the constants and the rendered
   paragraph; the constants alone stayed green through the prompt drift.
+  `build_agent` does NOT prime pass 1's budget - `PassBudget` is born
+  `spent=0, finalizing=False`, which is pass 1's state at every
+  `--max-passes`. Priming a `--max-passes 1` run finalizing stripped its read
+  tools on the FIRST call while the prompt had just promised N of them, and
+  `next_message` never fires on such a run, so `finalize.md` never explained
+  it either.
 
 ## Upstream samples (microsoft/agent-framework)
 

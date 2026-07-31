@@ -4,8 +4,11 @@ from pathlib import Path
 import pytest
 from agent_framework import AgentResponse, Message
 
+from reflection_demo.budget import PassBudget
+from reflection_demo.judging import RunLog
 from reflection_demo.main import (
     DEFAULT_TOPIC,
+    build_agent,
     ensure_corpus,
     model_present,
     normalize_host,
@@ -71,3 +74,35 @@ def test_persist_fallback_writes_a_placeholder_when_there_is_nothing(tmp_path):
     _write, flag = make_report_tools(report)
     persist_fallback(AgentResponse(messages=[]), report, flag)
     assert report.read_text(encoding="utf-8") == "(no report produced)"
+
+
+def _budget_of(agent):
+    """The run's ``PassBudget``, dug out of the budget middleware's closure.
+
+    ``build_agent`` returns ``(agent, flag)`` - the budget is internal, and
+    widening a production signature for one assertion is the wrong trade. The
+    middleware is the only object holding it.
+    """
+    held = [cell.cell_contents for cell in agent.middleware[0].__closure__ or ()]
+    (budget,) = [obj for obj in held if isinstance(obj, PassBudget)]
+    return budget
+
+
+@pytest.mark.parametrize("max_passes", [1, 3])
+def test_build_agent_starts_pass_one_non_finalizing(tmp_path, monkeypatch, max_passes):
+    """Regression: ``--max-passes 1`` used to prime the budget finalizing.
+
+    That closed exploration on the FIRST budgeted call of the run, right after
+    ``worker.md`` promised ``max_tool_calls`` of them - and since
+    ``next_message`` never fires on a single-pass run, ``finalize.md`` (the one
+    text explaining the strip) could not be delivered either. Pass 1 gets the
+    same fresh, non-finalizing budget at every ``--max-passes``; delivery is
+    forced by exhaustion, not by pre-emption.
+    """
+    monkeypatch.setenv("OLLAMA_MODEL", "gemma4:31b")   # OllamaChatClient needs it to construct
+    agent, _flag = build_agent(
+        tmp_path, tmp_path / "report.md", "topic", "judge instructions",
+        RunLog(tmp_path / "log.jsonl"), max_passes, max_tool_calls=6)
+
+    budget = _budget_of(agent)
+    assert (budget.finalizing, budget.spent, budget.max_calls) == (False, 0, 6)

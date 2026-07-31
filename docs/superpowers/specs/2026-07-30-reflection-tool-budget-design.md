@@ -89,6 +89,16 @@ resetting the counter is the only thing needed.
 already needs the pass number for the finalize decision (§4), so both
 pass-boundary concerns live in one place.
 
+Pass 1 has no boundary before it and is **not** primed: `PassBudget`'s
+defaults (`spent=0`, `finalizing=False`) are already pass 1's state, so
+`build_agent` constructs the budget and calls nothing on it. That holds at
+`--max-passes 1` too. Priming that lone pass `finalizing=True` would close
+exploration on its **first** budgeted call, seconds after `worker.md` promised
+`max_tool_calls` of them — and since `next_message` never fires on a
+single-pass run, `finalize.md`, the only text that explains the strip, could
+not be delivered either. Delivery is forced without it: at exhaustion the read
+tools are stripped and `BUDGET_SPENT` says why.
+
 ```python
 @dataclass
 class PassBudget:
@@ -279,6 +289,12 @@ run, `remove_tools` mutating in place).
   pass and the judge's feedback otherwise
 - `next_message` calls `start_pass`, with `finalizing` true only on that
   boundary
+
+`tests/test_reflection_main.py` (extended):
+
+- `build_agent` leaves pass 1's budget non-finalizing, at `--max-passes 1`
+  and above — the one decision-bearing branch in this change that no test
+  reached, and the one a prompt/middleware disagreement hides behind
 
 `tests/test_reflexion_budget.py` (updated): wording assertions moved to the
 new constants; new countdown cases; all existing structural cases retained.

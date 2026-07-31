@@ -385,12 +385,17 @@ delivery retry.
   `judging.py` beyond `next_message`'s new pass-boundary duties.**
 - **Reconciling the unreproduced A/B prediction.** *Done separately, after this
   spec was written.* The reflection demo's spec §1 used to predict that
-  reflection "misses the planted evidence conflicts"; two live runs did not
-  reproduce it, so §1 and the README now explain why instead - the planted
-  conflicts are *omission* fuel and both critics catch omissions, whereas the
-  two only diverge on *fabrication*, which a critic without the sources cannot
-  test. The budget this spec adds is what makes the separating configuration
-  reachable: a tool budget too small to read the whole corpus.
+  reflection "misses the planted evidence conflicts"; two live runs at
+  generous budgets did not reproduce it, so §1 and the README explain why -
+  the planted conflicts are *omission* fuel and both critics catch omissions,
+  whereas the two only diverge on *fabrication* (or a silent, unadmitted gap),
+  which a critic without the sources cannot test. A third run, at
+  `--max-tool-calls 3` on both demos - the separating configuration this spec
+  makes reachable - did reproduce it: the reflection worker never reached the
+  cloud-strategy document and shipped S3 unflagged, the judge called it
+  comprehensive, and the reflexion reviewer opened the same document with its
+  own tool calls and rejected. One reproduction on one local model, not a
+  general result, but the failure mode is real, not merely theoretical.
 
 ## 12. References
 

@@ -642,7 +642,7 @@ omissions. So on that axis the two demos agree and the A/B separates nothing.
 The critics only diverge when the worker asserts something **false** - the one
 thing a critic without the sources cannot test.
 
-What actually happened:
+What actually happened, in three runs on `gemma4:31b`:
 
 - **3 passes, `--num-ctx 16384`.** The worker surfaced the Azure/S3 conflict
   unprompted on pass 1 and the judge approved. Nothing was missed.
@@ -650,30 +650,45 @@ What actually happened:
   the worker admitted it had not read: *"the agent explicitly admits it did
   not review `docs_src/02_enterprise_cloud_strategy.md`, leaving gaps
   regarding corporate mandates, data residency, and encryption standards."*
+- **3 passes/cycles, `--max-tool-calls 3`** - tight enough that neither
+  worker can read the whole corpus:
 
-In both runs the worker was honest. Starved of tool calls it flagged the gap
-rather than inventing a recommendation - so the blind judge had something
-visible to reject, and did.
+  ```bash
+  poetry run reflection --max-tool-calls 3 --max-passes 3
+  poetry run reflexion  --max-tool-calls 3 --max-cycles 3
+  ```
 
-**The configuration most likely to separate them** is a tool budget too small
-to read the whole corpus, which is exactly what forces a worker to choose
-between admitting a gap and filling it from priors:
+  The reflection worker spent its 3 calls on `file_store.py` and the
+  architecture doc, never reached the cloud-strategy document, and did not
+  flag the gap - it delivered a clean, well-cited report recommending
+  **Amazon S3**. The judge, with no way to know a strategy document exists,
+  called it comprehensive: *"The report is comprehensive, grounding all
+  claims in specific source files."* **Approved on pass 1.**
 
-```bash
-poetry run reflection --max-tool-calls 3 --max-passes 3
-poetry run reflexion  --max-tool-calls 3 --max-cycles 3
-```
+  The reflexion reviewer spent its own 3 calls opening the corpus
+  independently of what the worker had read, found the cloud-strategy
+  document, and rejected: *"The report recommends migrating to Amazon S3,
+  which directly violates the Enterprise Cloud Strategy
+  (`docs_src/02_enterprise_cloud_strategy.md`) mandating Microsoft Azure...
+  "* The worker revised; cycle 2 recommends **Azure Blob Storage**, names the
+  conflict explicitly, and flags `s3_uploader.py` as legacy cleanup.
+  **Approved after 1 rejection.**
 
-The reflexion reviewer holds `read_file`, so it can open
-`02_enterprise_cloud_strategy.md` *itself* and catch a missing Azure conflict
-the worker never read. The reflection judge cannot. If a worker ever fills
-that gap from priors instead of admitting it, that is the run where the two
-patterns come apart - and n=1 on a local model is an anecdote either way.
+Same model, same corpus, same budget, same starting draft - one critic
+shipped a mandate violation as "comprehensive," the other caught it because
+it could check the worker's silence against the source rather than take it on
+faith. The first two runs did not separate the demos because the worker was
+honest about what it had missed; this run did, because a silent gap - not
+admitted, not fabricated, just never reached - is exactly the failure a
+critic without the corpus cannot detect.
 
-So: this demo shows the **mechanism and its blind spot**. It is not evidence
-that reflection underperforms. That claim belongs to the literature (see
-[Reflexion vs reflection](#reflexion-vs-reflection) above), not to a single
-run of a toy corpus.
+This is one reproduction on one local model over a planted corpus, not a
+general claim that reflection underperforms - that claim belongs to the
+literature (see [Reflexion vs reflection](#reflexion-vs-reflection) above).
+What it does establish is that the failure mode is real and reachable, not
+merely theoretical. `output/` is gitignored, so run the two commands above
+yourself to read either report in full - the topic and the planted corpus
+conflicts are deterministic; only the model's prose varies between runs.
 
 Both workers hold the same tools, run under the same tool budget, and are
 told about it in a byte-identical paragraph - `tests/test_budget_wording_parity.py`

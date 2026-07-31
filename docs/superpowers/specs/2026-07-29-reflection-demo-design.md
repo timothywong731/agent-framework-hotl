@@ -68,14 +68,24 @@ Observed, on `gemma4:31b`:
   unprompted on pass 1 and the judge approved. Nothing was missed.
 - 2 passes, `--max-tool-calls 4`: the judge **rejected**, naming the specific
   file the worker admitted it had not read. The blind judge did useful work.
+- 3 passes/cycles, `--max-tool-calls 3` — tight enough that neither worker
+  can read the whole corpus: the reflection worker never reached the
+  cloud-strategy document, did not flag the gap, and shipped a clean report
+  recommending S3; the judge called it comprehensive and approved on pass 1.
+  The reflexion reviewer opened the same document with its own tool calls,
+  caught the identical gap, and rejected — the worker revised to Azure and
+  was approved. Same model, same corpus, same budget: one critic shipped the
+  mandate violation, the other caught it.
 
-In both cases the worker was honest — starved of tool calls it flagged the gap
-rather than inventing a recommendation. So the demo shows the *mechanism* and
-its blind spot; it does not, on this corpus and this model, demonstrate
-reflection underperforming. Treat any such claim as a hypothesis until a run
-reproduces it. The README's "Running the A/B" section names the configuration
-most likely to: a tool budget too small to read the whole corpus, which is the
-one setting where a worker must either admit a gap or fill it from priors.
+In the first two runs the worker was honest — starved of tool calls it
+flagged the gap rather than inventing a recommendation, so the blind judge
+had something visible to reject. The third run separates the demos because
+the gap was silent: not admitted, not fabricated, just never reached — which
+is exactly the failure a critic without the corpus cannot detect. The
+README's "What the A/B does and does not show" section has the full
+transcripts. This is one reproduction on one local model, not a general claim
+that reflection underperforms; it establishes the failure mode is reachable,
+not merely theoretical.
 
 Standalone means: no imports from `hotl_demo` or `reflexion_demo`. The demo
 shares only `sample_data/` and the repo's Ollama conventions. `tools.py` is

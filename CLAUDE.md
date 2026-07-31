@@ -107,8 +107,12 @@ window and the compaction budget.
   the one hook that fires between passes. `remove_tools()` is only
   reachable from inside a tool call, so it cannot strip pre-emptively: the
   final pass strips read tools after its first call rather than before it.
-  Countdown wording is byte-identical to `reflexion_demo/budget.py`'s,
-  pinned by `tests/test_budget_wording_parity.py`.
+  Countdown wording is byte-identical to `reflexion_demo/budget.py`'s, and so
+  is the budget paragraph in the two `prompts/worker.md` templates - both
+  workers are told the `max_tool_calls` NUMBER, since a worker that knows it
+  has 12 can plan a 12-file sweep and one told "a limited number" cannot.
+  `tests/test_budget_wording_parity.py` pins the constants and the rendered
+  paragraph; the constants alone stayed green through the prompt drift.
 
 ## Upstream samples (microsoft/agent-framework)
 

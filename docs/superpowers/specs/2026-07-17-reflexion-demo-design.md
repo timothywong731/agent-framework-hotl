@@ -169,7 +169,13 @@ there is no phase discovery here, so frontmatter would be dead weight.
 - `worker.md` — one template, three variants selected by context vars:
   initial (`topic`), revision (`topic`, `feedback`, cycle numbers), finalize
   (`topic`, finalize instruction). Instructs: explore the corpus with tools,
-  ground every claim in a source file, deliver via `write_report`.
+  ground every claim in a source file, deliver via `write_report`. The initial
+  and revision variants also carry the budget paragraph — including the
+  `{{ max_tool_calls }}` number — byte-identical to
+  `reflection_demo/prompts/worker.md`'s, for the same reason the countdown
+  constants are (§5.1); the finalize variant carries none, having no read
+  tools. See
+  `docs/superpowers/specs/2026-07-30-reflection-tool-budget-design.md` §7.
 - `reviewer.md` — instructs: read the report, independently spot-check its
   claims against the corpus, evaluate accuracy (claims match sources),
   coverage (material conflicts/gaps for the topic addressed — e.g. a

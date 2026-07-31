@@ -159,7 +159,7 @@ class WorkerExecutor(Executor):
     """
 
     def __init__(self, agent_factory, run_dir: Path, max_cycles: int,
-                 id: str = "worker") -> None:
+                 max_tool_calls: int, id: str = "worker") -> None:
         """Args:
             agent_factory: ``factory(finalize: bool) -> (agent, budget, flag)``,
                 fresh per turn. ``finalize=True`` must construct the agent
@@ -168,6 +168,11 @@ class WorkerExecutor(Executor):
             run_dir: This run's artifact directory (report + review log).
             max_cycles: Review-cycle budget; cycle ``max_cycles`` rejecting
                 triggers the forced finalize.
+            max_tool_calls: The per-turn read-tool budget the factory's agents
+                run under, carried here only so the prompt can name it - the
+                reflection worker is told its number, and a worker coached
+                worse than its A/B twin gathers evidence differently for a
+                reason unrelated to the critic.
             id: Workflow node id.
         """
         super().__init__(id=id)
@@ -175,6 +180,7 @@ class WorkerExecutor(Executor):
         self._report_path = run_dir / REPORT_FILENAME
         self._log_path = run_dir / LOG_FILENAME
         self._max_cycles = max_cycles
+        self._max_tool_calls = max_tool_calls
         self._topic = ""
         self._last_spent = 0
 
@@ -184,7 +190,8 @@ class WorkerExecutor(Executor):
         self._topic = topic
         print("== cycle 1: drafting ==")
         await self._draft(render_worker_prompt(
-            mode="initial", topic=topic, cycle=1, max_cycles=self._max_cycles))
+            mode="initial", topic=topic, cycle=1, max_cycles=self._max_cycles,
+            max_tool_calls=self._max_tool_calls))
         await ctx.send_message(DraftReady(cycle=1, topic=topic))
 
     @handler
@@ -205,9 +212,13 @@ class WorkerExecutor(Executor):
             return
         if verdict.cycle >= self._max_cycles:
             print("== review budget exhausted: forced finalize (read tools stripped) ==")
+            # max_tool_calls is inert in this variant - the finalize agent is
+            # built with write_report only, so the template says nothing about
+            # a budget it does not have.
             await self._draft(render_worker_prompt(
                 mode="finalize", topic=self._topic, cycle=verdict.cycle + 1,
-                max_cycles=self._max_cycles, feedback=verdict.feedback,
+                max_cycles=self._max_cycles, max_tool_calls=self._max_tool_calls,
+                feedback=verdict.feedback,
                 previous_report=self._previous_report()), finalize=True)
             self._append_log({
                 "cycle": verdict.cycle + 1, "approved": False,
@@ -225,7 +236,8 @@ class WorkerExecutor(Executor):
         print(f"== cycle {next_cycle}: revising ==")
         await self._draft(render_worker_prompt(
             mode="revision", topic=self._topic, cycle=next_cycle,
-            max_cycles=self._max_cycles, feedback=verdict.feedback,
+            max_cycles=self._max_cycles, max_tool_calls=self._max_tool_calls,
+            feedback=verdict.feedback,
             previous_report=self._previous_report()))
         await ctx.send_message(DraftReady(cycle=next_cycle, topic=self._topic))
 

@@ -15,7 +15,8 @@ _WORKER_MODES = ("initial", "revision", "finalize")
 
 
 def render_worker_prompt(*, mode: str, topic: str, cycle: int, max_cycles: int,
-                         feedback: str = "", previous_report: str = "") -> str:
+                         max_tool_calls: int, feedback: str = "",
+                         previous_report: str = "") -> str:
     """Render the worker's turn prompt.
 
     Args:
@@ -24,6 +25,15 @@ def render_worker_prompt(*, mode: str, topic: str, cycle: int, max_cycles: int,
         cycle: 1-based draft number this turn produces.
         max_cycles: The review-cycle budget (for the model's situational
             awareness).
+        max_tool_calls: The read-tool budget this turn runs under. Stated as a
+            number, in a paragraph byte-identical to the reflection worker's:
+            a worker that knows it has 12 can plan a 12-file sweep and one
+            told only "a limited number" cannot, so naming it for one demo and
+            not the other would make evidence-gathering differ for a reason
+            unrelated to the critic. Required rather than defaulted - a
+            plausible-looking default would render a silently wrong number.
+            The ``finalize`` variant ignores it: that agent is constructed
+            with ``write_report`` only, so it has no budget to spend.
         feedback: Reviewer feedback (revision/finalize only).
         previous_report: Prior report text (revision/finalize only).
 
@@ -34,7 +44,8 @@ def render_worker_prompt(*, mode: str, topic: str, cycle: int, max_cycles: int,
         raise ValueError(f"unknown worker mode: {mode!r}")
     return _ENV.get_template("worker.md").render(
         mode=mode, topic=topic, cycle=cycle, max_cycles=max_cycles,
-        feedback=feedback, previous_report=previous_report,
+        max_tool_calls=max_tool_calls, feedback=feedback,
+        previous_report=previous_report,
     ).strip()
 
 

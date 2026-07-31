@@ -18,9 +18,10 @@ independent reviewer.
 Revise the report to address every point of the feedback. Re-check the
 corpus with your list_files and read_file tools where the feedback demands
 new evidence.
-You have a limited number of tool calls. The last few are announced in the
+
+You have {{ max_tool_calls }} tool calls. The last few are announced in the
 tool results, and when the budget is spent your exploration tools close and
-you write from what you have.
+you write from what you have. Spend them on the gaps that matter.
 {% elif mode == "finalize" %}
 
 ## Reviewer feedback on your last draft
@@ -39,9 +40,10 @@ report using only the material above.
 Explore the corpus with your list_files and read_file tools before writing.
 Ground every claim in a source file and cite its relative path. Cover the
 material conflicts and gaps the sources reveal for this topic.
-You have a limited number of tool calls. The last few are announced in the
+
+You have {{ max_tool_calls }} tool calls. The last few are announced in the
 tool results, and when the budget is spent your exploration tools close and
-you write from what you have.
+you write from what you have. Spend them on the gaps that matter.
 {% endif %}
 
 Deliver the COMPLETE report in markdown by calling the write_report tool

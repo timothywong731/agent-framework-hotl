@@ -47,7 +47,7 @@ def _log_lines(run_dir):
 
 async def test_on_topic_drafts_and_announces_cycle_one(tmp_path):
     factory = _worker_factory(tmp_path)
-    worker = WorkerExecutor(factory, tmp_path, max_cycles=3)
+    worker = WorkerExecutor(factory, tmp_path, max_cycles=3, max_tool_calls=12)
     ctx = FakeCtx()
     await worker.on_topic("NFS to S3", ctx)
 
@@ -59,7 +59,7 @@ async def test_on_topic_drafts_and_announces_cycle_one(tmp_path):
 
 async def test_approved_verdict_yields_and_logs(tmp_path):
     factory = _worker_factory(tmp_path)
-    worker = WorkerExecutor(factory, tmp_path, max_cycles=3)
+    worker = WorkerExecutor(factory, tmp_path, max_cycles=3, max_tool_calls=12)
     await worker.on_topic("t", FakeCtx())
 
     ctx = FakeCtx()
@@ -77,7 +77,7 @@ async def test_approved_verdict_yields_and_logs(tmp_path):
 
 async def test_rejection_with_cycles_left_revises_with_feedback(tmp_path):
     factory = _worker_factory(tmp_path)
-    worker = WorkerExecutor(factory, tmp_path, max_cycles=3)
+    worker = WorkerExecutor(factory, tmp_path, max_cycles=3, max_tool_calls=12)
     await worker.on_topic("t", FakeCtx())
 
     ctx = FakeCtx()
@@ -95,7 +95,7 @@ async def test_rejection_with_cycles_left_revises_with_feedback(tmp_path):
 
 async def test_rejection_at_budget_forces_toolless_finalize(tmp_path):
     factory = _worker_factory(tmp_path)
-    worker = WorkerExecutor(factory, tmp_path, max_cycles=3)
+    worker = WorkerExecutor(factory, tmp_path, max_cycles=3, max_tool_calls=12)
     await worker.on_topic("t", FakeCtx())
 
     ctx = FakeCtx()
@@ -121,7 +121,7 @@ async def test_missing_write_report_gets_one_nudge_then_text_fallback(tmp_path):
     factory = _worker_factory(
         tmp_path, write=False,                              # tool never "runs"
         texts=["# Migration Report\n\nLots of real content here.", "Done."])
-    worker = WorkerExecutor(factory, tmp_path, max_cycles=3)
+    worker = WorkerExecutor(factory, tmp_path, max_cycles=3, max_tool_calls=12)
     await worker.on_topic("t", FakeCtx())
 
     agent = factory.calls[0]["agent"]
@@ -135,7 +135,7 @@ async def test_fallback_uses_nudge_text_when_draft_said_nothing(tmp_path):
     factory = _worker_factory(
         tmp_path, write=False,
         texts=["", "# Report delivered only after the nudge."])
-    worker = WorkerExecutor(factory, tmp_path, max_cycles=3)
+    worker = WorkerExecutor(factory, tmp_path, max_cycles=3, max_tool_calls=12)
     await worker.on_topic("t", FakeCtx())
 
     report = (tmp_path / "report.md").read_text(encoding="utf-8")
@@ -153,7 +153,7 @@ async def test_full_loop_reject_then_approve_llm_free(tmp_path):
         return FakeAgent(reviewer_scripts.pop(0)), ToolBudget(max_calls=12, spent=1)
 
     workflow = build_reflexion_workflow(
-        WorkerExecutor(worker_factory, tmp_path, max_cycles=3),
+        WorkerExecutor(worker_factory, tmp_path, max_cycles=3, max_tool_calls=12),
         ReviewerExecutor(reviewer_factory),
     )
     outputs = []

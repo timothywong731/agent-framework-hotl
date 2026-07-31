@@ -29,7 +29,7 @@ async def test_reflexion_smoke(tmp_path):
     report_path = tmp_path / REPORT_FILENAME
     workflow = build_reflexion_workflow(
         WorkerExecutor(make_worker_factory(corpus, report_path, max_tool_calls=6),
-                       tmp_path, max_cycles=1),
+                       tmp_path, max_cycles=1, max_tool_calls=6),
         ReviewerExecutor(make_reviewer_factory(corpus, report_path, max_tool_calls=6)),
     )
 

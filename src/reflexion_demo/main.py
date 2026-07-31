@@ -161,7 +161,7 @@ async def _amain() -> None:
 
     worker = WorkerExecutor(
         make_worker_factory(corpus_root, report_path, args.max_tool_calls),
-        run_dir, args.max_cycles)
+        run_dir, args.max_cycles, args.max_tool_calls)
     reviewer = ReviewerExecutor(
         make_reviewer_factory(corpus_root, report_path, args.max_tool_calls))
     workflow = build_reflexion_workflow(worker, reviewer)

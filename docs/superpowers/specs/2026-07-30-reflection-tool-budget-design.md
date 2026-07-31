@@ -188,8 +188,14 @@ Its worker is already budgeted; only the coaching changes.
   string and must be updated. Its structural assertions (counting, exemption,
   strip-once-per-run, re-arm across runs, `None` tools, `None` result) all
   stay — only the wording assertions change, plus new countdown cases.
-- `prompts/worker.md`: state that the budget counts down and that the last
-  calls are announced, so the coaching is not a surprise mid-run.
+- `prompts/worker.md`: the initial and revision variants carry the **shared
+  budget paragraph** of §7 — byte for byte, `{{ max_tool_calls }}` number
+  included. The finalize variant carries none: that agent is constructed with
+  `write_report` only, so it has no budget to spend.
+- `prompting.py` / `graph.py` / `main.py`: `max_tool_calls` is threaded into
+  `render_worker_prompt` through `WorkerExecutor`, which already carries
+  `max_cycles`. Required keyword, not defaulted — a plausible-looking default
+  would render a silently wrong number into the prompt.
 - Its design spec §5 and the README's reflexion section: document the
   countdown.
 - Its live E2E is worth re-running — the worker's coaching changed.
@@ -202,8 +208,33 @@ Its worker is already budgeted; only the coaching changes.
   from what you already have, deliver with `write_report`.
 - **`reflection_demo/prompts/worker.md`** — the line "There is no tool
   budget here, but a bloated transcript crowds out the report" is now false
-  and is replaced: state the `{{ max_tool_calls }}` per-pass budget, that the
-  final calls are announced, and that exploration closes when it is spent.
+  and is replaced by the shared budget paragraph below.
+- **The budget paragraph is shared, byte for byte.** Both worker templates —
+  `reflection_demo/prompts/worker.md`, and the initial *and* revision variants
+  of `reflexion_demo/prompts/worker.md` — carry exactly this:
+
+```jinja
+You have {{ max_tool_calls }} tool calls. The last few are announced in the
+tool results, and when the budget is spent your exploration tools close and
+you write from what you have. Spend them on the gaps that matter.
+```
+
+  Both workers are told the **number**. §2's rationale — coaching one worker
+  better than the other makes evidence-gathering differ for a reason unrelated
+  to the critic — binds the prompts as hard as it binds the runtime nudges: a
+  worker that knows it has 12 calls can plan a 12-file sweep, and one told only
+  "a limited number" cannot. An earlier draft of this spec prescribed the
+  number for reflection (§7) and merely "state that the budget counts down"
+  for reflexion (§6), which contradicted §2 and produced exactly that
+  confound.
+
+  The paragraph names **no unit** — not "per pass", not "per turn". The scope
+  word is the one part that legitimately differs between the demos
+  (`reflection_demo` budgets a pass, `reflexion_demo` a turn), and a shared
+  paragraph cannot carry both without conflating the two vocabularies. Each
+  prompt states its own unit in its own closing paragraph instead
+  ("at most `{{ max_passes }}` passes" / "cycle `{{ cycle }}` of at most
+  `{{ max_cycles }}` review cycles").
 - **`reflection_demo/prompting.py`** — its module docstring says *"Unlike the
   reflexion worker there is no revision or finalize variant"*. Half of that
   becomes false: there is now a finalize message (though still no revision
@@ -261,6 +292,12 @@ def test_countdown_and_spent_wording_identical_across_demos():
     assert reflection_budget.COUNTDOWN == reflexion_budget.COUNTDOWN
     assert reflection_budget.BUDGET_SPENT == reflexion_budget.BUDGET_SPENT
 ```
+
+Constants are not enough on their own: the two prompts drifted apart while
+these assertions stayed green. The same file therefore renders both worker
+prompts with the same `max_tool_calls` and compares the extracted **budget
+paragraph** (§7), for the initial and revision variants, and asserts the
+reflexion finalize variant has none.
 
 Drift is the only real failure mode of the deliberate duplication, and this
 is the cheapest possible guard against it. A test importing both packages

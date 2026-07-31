@@ -296,6 +296,17 @@ run, `remove_tools` mutating in place).
   and above — the one decision-bearing branch in this change that no test
   reached, and the one a prompt/middleware disagreement hides behind
 
+`tests/test_reflection_prompts.py` (extended):
+
+- `finalize.md` states that a read tool on the final pass closes exploration
+  immediately afterwards — the only prose in either package describing the
+  finalize strip, so the only guard against it drifting from the middleware
+
+Both `budget.py` test files additionally cover the **countdown** branch with a
+`list[Content]` result, not just the closing branch: both append through the
+same `_append_note`, and the countdown fires up to three times a pass, so it
+was where the repr-mangling defect did the most damage.
+
 `tests/test_reflexion_budget.py` (updated): wording assertions moved to the
 new constants; new countdown cases; all existing structural cases retained.
 
@@ -330,8 +341,17 @@ delivery-retry caveat stays (reflexion nudges once more before falling back;
 reflection cannot, because a second `agent.run()` would re-enter the loop and
 burn a pass).
 
-Both demos' specs claim "exactly one variable changed"; after this change
-that claim is true of the worker for the first time.
+A **second** worker-side residue arrives with this change and must be
+documented alongside it: on the last pass/cycle reflexion's construction-time
+strip gives its worker **zero** exploratory calls, while reflection's
+finalizing pass can only strip from inside a tool call and therefore concedes
+**one** (§4). Both residues follow from the two demos being separate packages
+built on different framework primitives, not from the experiment.
+
+So: the worker's tool set, tool budget and coaching become identical here, and
+the two named residues are what "exactly one variable changed" is qualified
+by. No document may claim the worker sides differ in *nothing but* the
+delivery retry.
 
 ## 11. Out of scope (deliberate)
 

@@ -47,6 +47,19 @@ def test_finalize_message_states_it_is_the_last_pass_and_demands_delivery():
     assert "no further review" in lowered
 
 
+def test_finalize_message_warns_that_one_read_call_closes_exploration():
+    """The only prose in either package describing the finalize-pass strip.
+
+    ``remove_tools`` is reachable only from inside a tool call, so the final
+    pass cannot be stripped pre-emptively - it strips after the first one. This
+    sentence is what stops that from reading as a malfunction, and is the only
+    guard against the prompt and the middleware drifting apart.
+    """
+    out = " ".join(render_finalize_message(topic=TOPIC, max_passes=3).split())
+    assert ("Do not start new exploration: if you call a read tool on this "
+            "pass, your exploration tools close immediately afterwards.") in out
+
+
 def test_finalize_message_fully_renders():
     out = render_finalize_message(topic=TOPIC, max_passes=2)
     assert "{{" not in out and "{%" not in out

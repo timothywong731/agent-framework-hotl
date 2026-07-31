@@ -13,16 +13,28 @@ foil to `reflexion_demo`: the same corpus, the same default topic, the same
 worker tool *set* and tool-call budget, the same report artifact — with
 **one variable changed on purpose**, the critic's access to the *sources*.
 
-"On purpose" rather than "only": one further difference falls out of the two
-demos being separate packages, and is recorded rather than glossed because a
-reader will find it anyway. The missing second-`agent.run` delivery retry
-(§8 — re-entering the loop would burn a pass) cuts against the reflection
-side, and *could*: read a reflection report that landed on the longest-reply
-fallback with that in mind. The tool-call budget used to be a *second*,
-uncontrolled asymmetry here (the reflexion worker capped, this one
-unbounded) — see §6, now reversed: both workers run under an identical
-per-turn/per-pass budget with identical countdown coaching, so the worker
-side of the A/B differs in nothing but the delivery retry above.
+"On purpose" rather than "only": two further differences fall out of the two
+demos being separate packages built on different framework primitives, and are
+recorded rather than glossed because a reader will find them anyway.
+
+1. **The delivery retry.** Missing here (§8 — a second `agent.run` would
+   re-enter the loop and burn a pass). This cuts against the reflection side,
+   and *could*: read a reflection report that landed on the longest-reply
+   fallback with that in mind.
+2. **One conceded exploratory call on the last pass.** Reflexion's forced
+   finalize *constructs* its worker without read tools, so it gets zero.
+   Reflection's loop owns its agent and `remove_tools()` is reachable only
+   from inside a tool call, so a reflection worker that ignores "do not start
+   new exploration" gets exactly one call before the strip fires. One call
+   against zero, on one pass of a run.
+
+The tool-call *budget* used to be a third, larger asymmetry here (the
+reflexion worker capped, this one unbounded) — see §6, now reversed: both
+workers run under an identical per-turn/per-pass budget, with identical
+countdown coaching and a byte-identical budget paragraph in their prompts.
+The worker side of the A/B therefore differs in the two residues above and
+nothing else — which is weaker than "nothing but the delivery retry", and
+accurate.
 
 - `reflexion_demo`: the critic is an `Agent` node in a cyclic graph holding
   `list_files` / `read_file` / `read_report`. It reads the report itself and

@@ -136,6 +136,26 @@ async def test_content_list_result_survives_the_note():
     assert BUDGET_SPENT in ctx.result[0].text                # note still delivered
 
 
+async def test_countdown_note_also_survives_a_content_list_result():
+    """The countdown branch appends through the same ``_append_note``.
+
+    The regression above only covers the closing branch (``max_calls=1``), yet
+    the countdown is where the repr-mangling bug did the most damage: it fires
+    up to three times a turn against results the worker still has calls left to
+    act on, where the closing branch mangles one result per turn.
+    """
+    budget = ToolBudget(max_calls=2)
+    mw = make_budget_middleware(budget, BUDGETED_TOOL_NAMES, "worker")
+    run_tools = ["list_files", "read_file", "write_report"]
+    ctx = FakeInvocationContext("read_file", run_tools,
+                                result=[Content.from_text("REAL-FILE-CONTENT-12345")])
+    await _call(mw, ctx)
+    assert ctx.removed == [] and run_tools == ["list_files", "read_file", "write_report"]
+    assert len(ctx.result) == 1
+    assert "REAL-FILE-CONTENT-12345" in ctx.result[0].text   # original output preserved
+    assert COUNTDOWN[1] in ctx.result[0].text                # countdown still delivered
+
+
 async def test_content_list_with_no_text_content_gets_a_new_text_item():
     """A tool result of only non-text Content (e.g. an image) has nothing to
     append the note to in place - a new text Content carries it instead of

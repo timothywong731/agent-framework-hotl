@@ -551,8 +551,8 @@ Same corpus, same default topic, same worker tool *set*, same per-pass tool
 budget with the same countdown coaching, same report artifact - and one
 variable changed on purpose: **the critic has no tools and cannot reach the
 sources**. Both critics see the report.
-One further worker-side difference follows from the two demos being separate
-packages rather than from the experiment, and is named under [Running the
+Two smaller worker-side differences follow from the two demos being separate
+packages rather than from the experiment, and are named under [Running the
 A/B](#running-the-ab) below.
 
 ```mermaid
@@ -624,9 +624,16 @@ planted corpus conflicts - the enterprise Azure mandate against
 by *both* workers. Only the reflexion reviewer can open the sources and
 check whether the report actually addressed them.
 
-One worker-side difference remains. It falls out of the two demos being
-separate packages, not out of the experiment, and is stated here rather than
-left for a skeptical reader to find:
+Both workers hold the same tools, run under the same tool budget, and are
+told about it in a byte-identical paragraph - `tests/test_budget_wording_parity.py`
+renders both prompts and compares that paragraph, because telling one worker
+"12 calls" and the other "a limited number" would make them explore
+differently for a reason that has nothing to do with the critic.
+
+Two worker-side differences remain. Both fall out of the two demos being
+separate packages built on different framework primitives, not out of the
+experiment, and are stated here rather than left for a skeptical reader to
+find:
 
 - **Delivery retry.** When the model finishes without calling `write_report`,
   reflexion issues a second `agent.run` with an explicit nudge before falling
@@ -638,6 +645,12 @@ left for a skeptical reader to find:
   This one cuts the other way, against the reflection side, and is the reason
   `worker.md` states that a `write_report` call is the only thing that saves
   the report.
+- **One conceded call on the last pass.** Reflexion's forced finalize
+  *constructs* the worker without read tools, so it gets zero exploratory
+  calls. Here the loop owns the agent and `remove_tools()` is reachable only
+  from inside a tool call, so a worker that ignores "do not start new
+  exploration" gets exactly one before the strip fires - see [The tool
+  budget](#the-tool-budget). One call against zero, on one pass of a run.
 
 ### What differs
 

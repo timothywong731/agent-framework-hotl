@@ -12,6 +12,9 @@ You have {{ max_tool_calls }} tool calls. The last few are announced in the
 tool results, and when the budget is spent your exploration tools close and
 you write from what you have. Spend them on the gaps that matter.
 
+Your tool budget renews at the start of every pass - nothing carries over
+from an earlier one.
+
 Deliver the COMPLETE report in markdown by calling the write_report tool
 with the full text. Only that call reliably saves the report: if you never
 call it, the single longest reply of the run is salvaged instead, so a

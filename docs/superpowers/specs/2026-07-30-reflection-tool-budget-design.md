@@ -241,10 +241,28 @@ you write from what you have. Spend them on the gaps that matter.
   The paragraph names **no unit** — not "per pass", not "per turn". The scope
   word is the one part that legitimately differs between the demos
   (`reflection_demo` budgets a pass, `reflexion_demo` a turn), and a shared
-  paragraph cannot carry both without conflating the two vocabularies. Each
-  prompt states its own unit in its own closing paragraph instead
-  ("at most `{{ max_passes }}` passes" / "cycle `{{ cycle }}` of at most
-  `{{ max_cycles }}` review cycles").
+  paragraph cannot carry both without conflating the two vocabularies.
+
+  **Correction (see the 2026-07-30 reset-unit fix):** this section originally
+  claimed each prompt's existing closing paragraph already covered the unit —
+  "at most `{{ max_passes }}` passes" / "cycle `{{ cycle }}` of at most
+  `{{ max_cycles }}` review cycles". That claim was wrong: those paragraphs
+  state the RUN's total length, not when the TOOL BUDGET resets, which is a
+  different fact. Dropping the unit from the shared paragraph without
+  replacing it elsewhere left neither worker told when its budget resets — a
+  real coaching gap, not a covered one. Fixed by giving each `worker.md` one
+  additional sentence, next to the shared paragraph, in its own vocabulary:
+
+  - `reflection_demo`: "Your tool budget renews at the start of every pass -
+    nothing carries over from an earlier one."
+  - `reflexion_demo` (initial and revision variants only — finalize has no
+    budget to describe, so it gets neither sentence): "Your tool budget
+    renews at the start of every turn - nothing carries over from an earlier
+    one."
+
+  `tests/test_budget_wording_parity.py` now asserts each sentence is present
+  in the right prompt and absent from the wrong one, in addition to pinning
+  the shared paragraph.
 - **`reflection_demo/prompting.py`** — its module docstring says *"Unlike the
   reflexion worker there is no revision or finalize variant"*. Half of that
   becomes false: there is now a finalize message (though still no revision

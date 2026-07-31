@@ -22,6 +22,9 @@ new evidence.
 You have {{ max_tool_calls }} tool calls. The last few are announced in the
 tool results, and when the budget is spent your exploration tools close and
 you write from what you have. Spend them on the gaps that matter.
+
+Your tool budget renews at the start of every turn - nothing carries over
+from an earlier one.
 {% elif mode == "finalize" %}
 
 ## Reviewer feedback on your last draft
@@ -44,6 +47,9 @@ material conflicts and gaps the sources reveal for this topic.
 You have {{ max_tool_calls }} tool calls. The last few are announced in the
 tool results, and when the budget is spent your exploration tools close and
 you write from what you have. Spend them on the gaps that matter.
+
+Your tool budget renews at the start of every turn - nothing carries over
+from an earlier one.
 {% endif %}
 
 Deliver the COMPLETE report in markdown by calling the write_report tool

@@ -624,6 +624,57 @@ planted corpus conflicts - the enterprise Azure mandate against
 by *both* workers. Only the reflexion reviewer can open the sources and
 check whether the report actually addressed them.
 
+### What the A/B does and does not show
+
+It is tempting to write that reflection will *miss* the planted conflicts.
+Do not assume it - two live runs on `gemma4:31b` did not reproduce that, and
+the reason is more useful than the prediction was.
+
+A tool-less judge handles two different worker failures very differently:
+
+| Worker failure | Can a tool-less judge catch it? |
+|---|---|
+| **Omission** - thin report, no citations, a gap it admits to | **Yes.** It is visible on the face of the text. |
+| **Fabrication** - a confident claim that contradicts a source | **No.** There is nothing to check it against. |
+
+The planted conflicts are *omission* fuel, and **both** critics catch
+omissions. So on that axis the two demos agree and the A/B separates nothing.
+The critics only diverge when the worker asserts something **false** - the one
+thing a critic without the sources cannot test.
+
+What actually happened:
+
+- **3 passes, `--num-ctx 16384`.** The worker surfaced the Azure/S3 conflict
+  unprompted on pass 1 and the judge approved. Nothing was missed.
+- **2 passes, `--max-tool-calls 4`.** The judge **rejected**, naming the file
+  the worker admitted it had not read: *"the agent explicitly admits it did
+  not review `docs_src/02_enterprise_cloud_strategy.md`, leaving gaps
+  regarding corporate mandates, data residency, and encryption standards."*
+
+In both runs the worker was honest. Starved of tool calls it flagged the gap
+rather than inventing a recommendation - so the blind judge had something
+visible to reject, and did.
+
+**The configuration most likely to separate them** is a tool budget too small
+to read the whole corpus, which is exactly what forces a worker to choose
+between admitting a gap and filling it from priors:
+
+```bash
+poetry run reflection --max-tool-calls 3 --max-passes 3
+poetry run reflexion  --max-tool-calls 3 --max-cycles 3
+```
+
+The reflexion reviewer holds `read_file`, so it can open
+`02_enterprise_cloud_strategy.md` *itself* and catch a missing Azure conflict
+the worker never read. The reflection judge cannot. If a worker ever fills
+that gap from priors instead of admitting it, that is the run where the two
+patterns come apart - and n=1 on a local model is an anecdote either way.
+
+So: this demo shows the **mechanism and its blind spot**. It is not evidence
+that reflection underperforms. That claim belongs to the literature (see
+[Reflexion vs reflection](#reflexion-vs-reflection) above), not to a single
+run of a toy corpus.
+
 Both workers hold the same tools, run under the same tool budget, and are
 told about it in a byte-identical paragraph - `tests/test_budget_wording_parity.py`
 renders both prompts and compares that paragraph, because telling one worker

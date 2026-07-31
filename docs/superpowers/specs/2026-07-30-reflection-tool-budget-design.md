@@ -383,11 +383,14 @@ delivery retry.
   already noted in the README gotchas.
 - **Changing `--max-passes`, the judge, the verdict schema, or anything in
   `judging.py` beyond `next_message`'s new pass-boundary duties.**
-- **Reconciling the unreproduced A/B prediction.** The reflection demo's spec
-  §1 predicts that reflection "misses the planted evidence conflicts"; the
-  live 3-pass run instead saw the worker surface the Azure/S3 conflict
-  unprompted and the judge approve on pass 1. That prediction is a hypothesis
-  rather than a result, and correcting the claim is its own piece of work.
+- **Reconciling the unreproduced A/B prediction.** *Done separately, after this
+  spec was written.* The reflection demo's spec §1 used to predict that
+  reflection "misses the planted evidence conflicts"; two live runs did not
+  reproduce it, so §1 and the README now explain why instead - the planted
+  conflicts are *omission* fuel and both critics catch omissions, whereas the
+  two only diverge on *fabrication*, which a critic without the sources cannot
+  test. The budget this spec adds is what makes the separating configuration
+  reachable: a tool budget too small to read the whole corpus.
 
 ## 12. References
 

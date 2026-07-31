@@ -44,9 +44,38 @@ accurate.
   handed the report's text by the predicate and can only judge it **on its
   own terms**.
 
-Running both on the same topic and diffing `report.md` is the demo. The
-expected result: reflection converges quickly on structure and prose, and
-misses the planted evidence conflicts that the grounded reviewer catches.
+Running both on the same topic and diffing `report.md` is the demo.
+
+This spec previously predicted an outcome — that reflection would converge on
+structure and prose and *miss* the planted evidence conflicts. Two live runs
+did not reproduce it, and the reason is worth more than the prediction was.
+
+A tool-less judge handles two worker failures very differently:
+
+| Worker failure | Can a tool-less judge catch it? |
+|---|---|
+| **Omission** - thin report, no citations, a gap it admits to | **Yes.** It is visible on the face of the text. |
+| **Fabrication** - a confident claim that contradicts a source | **No.** There is nothing to check it against. |
+
+The planted conflicts are *omission* fuel, and both critics catch omissions —
+so on that axis the two demos agree, and the A/B separates nothing. The
+difference only bites when the worker asserts something **false**, because
+that is the one thing a critic without the sources cannot test.
+
+Observed, on `gemma4:31b`:
+
+- 3 passes, `--num-ctx 16384`: the worker surfaced the Azure/S3 conflict
+  unprompted on pass 1 and the judge approved. Nothing was missed.
+- 2 passes, `--max-tool-calls 4`: the judge **rejected**, naming the specific
+  file the worker admitted it had not read. The blind judge did useful work.
+
+In both cases the worker was honest — starved of tool calls it flagged the gap
+rather than inventing a recommendation. So the demo shows the *mechanism* and
+its blind spot; it does not, on this corpus and this model, demonstrate
+reflection underperforming. Treat any such claim as a hypothesis until a run
+reproduces it. The README's "Running the A/B" section names the configuration
+most likely to: a tool budget too small to read the whole corpus, which is the
+one setting where a worker must either admit a gap or fill it from priors.
 
 Standalone means: no imports from `hotl_demo` or `reflexion_demo`. The demo
 shares only `sample_data/` and the repo's Ollama conventions. `tools.py` is
